@@ -91,9 +91,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ##  Updating the Database Schema
 
-Add a new column:
+Add a new column:( example)
 ```
-ALTER TABLE vendor_contact_extracts ADD COLUMN not_useful VARCHAR(255);
+ALTER TABLE table_name ADD COLUMN column_name;
 ```
 Make it persistent:
 Add the same line to `sql/init.sql`.
