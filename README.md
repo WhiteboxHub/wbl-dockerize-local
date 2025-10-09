@@ -104,10 +104,10 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ---
 
-## Database: Export / Init Notes
+## Database: Export 
 
 * `sql/init.sql` is the sanitized SQL dump (schema + seed data) used to initialize the MySQL container.
-* The dump was produced by exporting the production DB and then renaming the sanitized file to `init.sql` in this repo.
+* The dump was produced by exporting the production DB and then renaming the sanitized file to `init.sql`.
 * MySQL executes `*.sql` files placed in `/docker-entrypoint-initdb.d/` **only on first initialization**. To re-run, remove the DB volume or import manually.
 
 ---
