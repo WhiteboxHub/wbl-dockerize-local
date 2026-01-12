@@ -6,7 +6,7 @@ interface EnhancedMetricCardProps {
   title: string;
   value: string | number;
   icon?: ReactNode;
-  variant?: "default" | "purple" | "blue" | "green" | "orange" | "red" | "teal"  ;
+  variant?: "default" | "purple" | "blue" | "green" | "orange" | "red" | "teal" | "pink" | "emerald" | "indigo" | "fuchsia" | "cyan" | "amber";
   trend?: {
     value: number;
     isPositive: boolean;
@@ -47,25 +47,61 @@ const variantStyles = {
   },
   red: {
     bg: "bg-white",
-    iconBg: "bg-red-100",
-    iconColor: "text-red-600",
-    border: "border-red-200"
+    iconBg: "bg-rose-200 shadow-md shadow-rose-400/40",
+    iconColor: "text-rose-700",
+    border: "border-rose-300"
   },
   teal: {
     bg: "bg-white",
     iconBg: "bg-teal-100",
     iconColor: "text-teal-600",
     border: "border-teal-200"
-  }
+  },
+  pink: {
+    bg: "bg-white",
+    iconBg: "bg-pink-100",
+    iconColor: "text-pink-600",
+    border: "border-pink-200"
+  },
+  emerald: {
+    bg: "bg-white",
+    iconBg: "bg-emerald-100",
+    iconColor: "text-emerald-600",
+    border: "border-emerald-200"
+  },
+  indigo: {
+    bg: "bg-white",
+    iconBg: "bg-indigo-100",
+    iconColor: "text-indigo-600",
+    border: "border-indigo-200"
+  },
+  fuchsia: {
+    bg: "bg-white",
+    iconBg: "bg-fuchsia-100",
+    iconColor: "text-fuchsia-600",
+    border: "border-fuchsia-200"
+  },
+  cyan: {
+    bg: "bg-white",
+    iconBg: "bg-cyan-100",
+    iconColor: "text-cyan-600",
+    border: "border-cyan-200"
+  },
+  amber: {
+    bg: "bg-white",
+    iconBg: "bg-amber-100",
+    iconColor: "text-amber-600",
+    border: "border-amber-200"
+  },
 };
 
-export function EnhancedMetricCard({ 
-  title, 
-  value, 
-  icon, 
-  variant = "default", 
+export function EnhancedMetricCard({
+  title,
+  value,
+  icon,
+  variant = "default",
   trend,
-  className 
+  className
 }: EnhancedMetricCardProps) {
   const styles = variantStyles[variant];
 

@@ -1,102 +1,192 @@
-import asyncio
-import mysql.connector
-from mysql.connector import Error
+import logging
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from fastapi import HTTPException
-from fapi.db.database import db_config
-from fapi.db.schemas import VendorContactExtractCreate
 
-async def get_all_vendor_contacts():
-    loop = asyncio.get_event_loop()
-    conn = await loop.run_in_executor(None, lambda: mysql.connector.connect(**db_config))
+from fapi.db.models import VendorContactExtractsORM, Vendor
+from fapi.db.schemas import VendorContactExtractCreate, VendorContactExtractUpdate
+
+logger = logging.getLogger(__name__)
+
+async def get_all_vendor_contacts(db: Session) -> List[VendorContactExtractsORM]:
+
     try:
-        cursor = conn.cursor(dictionary=True)
-        query = "SELECT * FROM vendor_contact_extracts ORDER BY id DESC"
-        await loop.run_in_executor(None, cursor.execute, query)
-        rows = cursor.fetchall()
-        return rows
-    except Error as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching vendor contacts: {e}")
-    finally:
-        cursor.close()
-        conn.close()
+        contacts = db.query(VendorContactExtractsORM).order_by(VendorContactExtractsORM.id.desc()).all()
+        return contacts
+    except SQLAlchemyError as e:
+        logger.error(f"Error fetching vendor contacts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching vendor contacts: {str(e)}")
 
-async def insert_vendor_contact(contact: VendorContactExtractCreate):
-    loop = asyncio.get_event_loop()
-    conn = await loop.run_in_executor(None, lambda: mysql.connector.connect(**db_config))
+async def get_vendor_contact_by_id(contact_id: int, db: Session) -> VendorContactExtractsORM:
+ 
+    contact = db.query(VendorContactExtractsORM).filter(VendorContactExtractsORM.id == contact_id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Vendor contact not found")
+    return contact
+
+async def insert_vendor_contact(contact: VendorContactExtractCreate, db: Session) -> VendorContactExtractsORM:
+    
     try:
-        cursor = conn.cursor()
-
-        query = """
-            INSERT INTO vendor_contact_extracts (
-                full_name, source_email, email, phone,
-                linkedin_id, company_name, location,
-                extraction_date, moved_to_vendor
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, CURDATE(), 0)
-        """
-        values = (
-            contact.full_name,
-            contact.source_email,
-            contact.email,
-            contact.phone,
-            contact.linkedin_id,
-            contact.company_name,
-            contact.location
+       
+        db_contact = VendorContactExtractsORM(
+            full_name=contact.full_name,
+            source_email=contact.source_email,
+            email=contact.email,
+            phone=contact.phone,
+            linkedin_id=contact.linkedin_id,
+            company_name=contact.company_name,
+            location=contact.location,
+            moved_to_vendor=False
         )
+        
+        db.add(db_contact)
+        db.commit()
+        db.refresh(db_contact)
+        return db_contact
+        
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Duplicate entry or integrity error")
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Insert error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Insert error: {str(e)}")
 
-        await loop.run_in_executor(None, cursor.execute, query, values)
-        conn.commit()
-    except Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Insert error: {e}")
-    finally:
-        cursor.close()
-        conn.close()
-
-async def update_vendor_contact(contact_id: int, fields: dict):
-    if not fields:
+async def update_vendor_contact(contact_id: int, update_data: VendorContactExtractUpdate, db: Session) -> VendorContactExtractsORM:
+    """Update vendor contact using SQLAlchemy ORM"""
+    if not update_data.dict(exclude_unset=True):
         raise HTTPException(status_code=400, detail="No data to update")
 
-    loop = asyncio.get_event_loop()
-    conn = await loop.run_in_executor(None, lambda: mysql.connector.connect(**db_config))
+
+    db_contact = db.query(VendorContactExtractsORM).filter(VendorContactExtractsORM.id == contact_id).first()
+    if not db_contact:
+        raise HTTPException(status_code=404, detail="Vendor contact not found")
+
     try:
-        cursor = conn.cursor()
-        set_clause = ", ".join([f"{key} = %s" for key in fields])
-        values = list(fields.values())
-        values.append(contact_id)
+      
+        update_fields = update_data.dict(exclude_unset=True)
+        for field, value in update_fields.items():
+            setattr(db_contact, field, value)
+        
+        db.commit()
+        db.refresh(db_contact)
+        return db_contact
+        
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Duplicate entry or integrity error")
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Update error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Update error: {str(e)}")
 
-        query = f"""
-            UPDATE vendor_contact_extracts
-            SET {set_clause}
-            WHERE id = %s
-        """
-        await loop.run_in_executor(None, cursor.execute, query, values)
-        conn.commit()
+async def delete_vendor_contact(contact_id: int, db: Session) -> dict:
+    """Delete vendor contact using SQLAlchemy ORM"""
+    db_contact = db.query(VendorContactExtractsORM).filter(VendorContactExtractsORM.id == contact_id).first()
+    if not db_contact:
+        raise HTTPException(status_code=404, detail="Vendor contact not found")
 
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Vendor contact not found")
-
-    except Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Update error: {e}")
-    finally:
-        cursor.close()
-        conn.close()
-
-async def delete_vendor_contact(contact_id: int):
-    loop = asyncio.get_event_loop()
-    conn = await loop.run_in_executor(None, lambda: mysql.connector.connect(**db_config))
     try:
-        cursor = conn.cursor()
-        query = "DELETE FROM vendor_contact_extracts WHERE id = %s"
-        await loop.run_in_executor(None, cursor.execute, query, (contact_id,))
-        conn.commit()
+        db.delete(db_contact)
+        db.commit()
+        return {"message": f"Vendor contact with ID {contact_id} deleted successfully"}
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Delete error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
 
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Vendor contact not found")
 
-    except Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Delete error: {e}")
-    finally:
-        cursor.close()
-        conn.close()
+
+async def insert_vendor_contacts_bulk(contacts: List[VendorContactExtractCreate], db: Session) -> dict:
+    """Bulk insert vendor contacts with duplicate handling"""
+    inserted = 0
+    failed = 0
+    duplicates = 0
+    failed_contacts = []
+    duplicate_contacts = []
+    
+    try:
+        for contact in contacts:
+            try:
+                # Check for duplicates by email or linkedin_id
+                existing = None
+                if contact.email or contact.linkedin_id:
+                    existing = db.query(VendorContactExtractsORM).filter(
+                        or_(
+                            VendorContactExtractsORM.email == contact.email if contact.email else False,
+                            VendorContactExtractsORM.linkedin_id == contact.linkedin_id if contact.linkedin_id else False
+                        )
+                    ).first()
+                
+                if existing:
+                    duplicates += 1
+                    duplicate_contacts.append({
+                        "full_name": contact.full_name,
+                        "email": contact.email,
+                        "reason": "Duplicate email or LinkedIn ID"
+                    })
+                    continue
+                
+                # Insert new contact
+                db_contact = VendorContactExtractsORM(
+                    full_name=contact.full_name,
+                    source_email=contact.source_email,
+                    email=contact.email,
+                    phone=contact.phone,
+                    linkedin_id=contact.linkedin_id,
+                    company_name=contact.company_name,
+                    location=contact.location,
+                    moved_to_vendor=False
+                )
+                
+                db.add(db_contact)
+                inserted += 1
+                
+            except Exception as e:
+                failed += 1
+                failed_contacts.append({
+                    "full_name": contact.full_name,
+                    "email": contact.email,
+                    "reason": str(e)
+                })
+                logger.error(f"Failed to insert contact {contact.full_name}: {str(e)}")
+        
+        # Commit all successful inserts
+        db.commit()
+        
+        return {
+            "inserted": inserted,
+            "failed": failed,
+            "duplicates": duplicates,
+            "total": len(contacts),
+            "failed_contacts": failed_contacts,
+            "duplicate_contacts": duplicate_contacts
+        }
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Bulk insert error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Bulk insert error: {str(e)}")
+
+
+async def delete_vendor_contacts_bulk(contact_ids: List[int], db: Session) -> dict:
+    """Bulk delete vendor contacts"""
+    try:
+        deleted_count = db.query(VendorContactExtractsORM).filter(
+            VendorContactExtractsORM.id.in_(contact_ids)
+        ).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        return {
+            "deleted": deleted_count,
+            "message": f"Successfully deleted {deleted_count} contacts"
+        }
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Bulk delete error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Bulk delete error: {str(e)}")

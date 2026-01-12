@@ -1,12 +1,25 @@
-
 "use client";
 import { ModuleRegistry, AllCommunityModule } from "ag-grid-community";
 ModuleRegistry.registerModules([AllCommunityModule]);
-import { ColDef, GridReadyEvent, ColumnMovedEvent, CellValueChangedEvent, GridApi } from "ag-grid-community";
+import {
+  ColDef,
+  GridReadyEvent,
+  ColumnMovedEvent,
+  CellValueChangedEvent,
+  GridApi,
+} from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
 import { useMemo, useCallback, useRef, useState, useEffect } from "react";
 import { Button } from "@/components/admin_ui/button";
-import { EyeIcon, EditIcon, TrashIcon, DownloadIcon, SettingsIcon } from "lucide-react";
+import { Plus } from "lucide-react";
+import {
+  EyeIcon,
+  EditIcon,
+  TrashIcon,
+  DownloadIcon,
+  SettingsIcon,
+} from "lucide-react";
+import { MutableRefObject } from "react";
 import { ViewModal } from "./ViewModal";
 import { EditModal } from "@/components/EditModal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -14,12 +27,10 @@ import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 import "@/styles/admin.css";
 
-
-
 const ColumnVisibilityModal = ({
   isOpen,
   onClose,
-  children
+  children,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -27,8 +38,14 @@ const ColumnVisibilityModal = ({
 }) => {
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" onClick={onClose}>
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-[425px] p-4" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[425px] rounded-lg bg-white p-4 shadow-xl dark:bg-gray-800"
+        onClick={(e) => e.stopPropagation()}
+      >
         {children}
       </div>
     </div>
@@ -42,17 +59,22 @@ interface AGGridTableProps {
   defaultColDef?: ColDef;
   onRowClicked?: (data: any) => void;
   onRowUpdated?: (data: any) => void;
+  onRowAdded?: (data: any) => void;
   onRowDeleted?: (id: string | number) => void;
+  onAddClick?: () => void;
   title?: string;
   showSearch?: boolean;
   showFilters?: boolean;
   height?: string;
   overlayNoRowsTemplate?: string;
   batches?: any[];
-  gridOptions?: any;
+
   getRowNodeId?: (data: any) => string;
-
-
+  showAddButton?: boolean;
+  onSelectionChanged?: (selectedRows: any[]) => void;
+  skipDeleteConfirmation?: boolean;
+  onFilterChanged?: () => void;
+  onGridReady?: (params: any) => void;
 }
 
 interface RowData {
@@ -64,6 +86,7 @@ interface RowData {
   fullName?: string;
   company?: string;
   [key: string]: any;
+
 }
 
 export function AGGridTable({
@@ -72,25 +95,38 @@ export function AGGridTable({
   loading = false,
   onRowClicked,
   onRowUpdated,
+  onRowAdded,
   onRowDeleted,
+  onAddClick,
   overlayNoRowsTemplate = "No rows to show",
   title,
   showSearch = true,
   showFilters = true,
   height = "400px",
-  batches = []
+  batches = [],
+  getRowNodeId,
+  showAddButton,
+  onSelectionChanged,
+  skipDeleteConfirmation = false,
+  onFilterChanged,
+  onGridReady: onGridReadyProp,
 }: AGGridTableProps) {
   // Refs and State
   const gridRef = useRef<AgGridReact>(null);
   const gridApiRef = useRef<GridApi | null>(null);
-  const [selectedRowData, setSelectedRowData] = useState<RowData[] | null>(null);
+  const [selectedRowData, setSelectedRowData] = useState<RowData[] | null>(
+    null
+  );
   const [viewData, setViewData] = useState<RowData | null>(null);
   const [currentViewIndex, setCurrentViewIndex] = useState<number>(0);
   const [editData, setEditData] = useState<RowData | null>(null);
-  const [deleteConfirmData, setDeleteConfirmData] = useState<RowData | null>(null);
+  const [deleteConfirmData, setDeleteConfirmData] = useState<RowData | null>(
+    null
+  );
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isColumnModalOpen, setIsColumnModalOpen] = useState(false);
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // Detect dark mode
   useEffect(() => {
@@ -99,7 +135,10 @@ export function AGGridTable({
     };
     checkDarkMode();
     const observer = new MutationObserver(checkDarkMode);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
     return () => observer.disconnect();
   }, []);
 
@@ -113,46 +152,70 @@ export function AGGridTable({
         } catch (e) {
           console.error("Failed to parse hidden columns", e);
         }
+      } else {
+        const defaultHidden = initialColumnDefs
+          .filter((col) => col.hide && col.field)
+          .map((col) => col.field as string);
+        if (defaultHidden.length > 0) {
+          setHiddenColumns(defaultHidden);
+        }
       }
+      setIsInitialized(true);
     }
-  }, [title]);
+  }, [title, initialColumnDefs]);
 
   // Save column visibility
   useEffect(() => {
-    if (title) {
-      localStorage.setItem(`hiddenColumns-${title}`, JSON.stringify(hiddenColumns));
+    if (title && isInitialized) {
+      localStorage.setItem(
+        `hiddenColumns-${title}`,
+        JSON.stringify(hiddenColumns)
+      );
     }
-  }, [hiddenColumns, title]);
-
+  }, [hiddenColumns, title, isInitialized]);
 
   const visibleColumnDefs = useMemo(() => {
-    return initialColumnDefs.filter(col => {
-      if (!col.field) return true;
-      return !hiddenColumns.includes(col.field);
-    });
-  }, [initialColumnDefs, hiddenColumns]);
+    return initialColumnDefs
+      .filter((col) => {
+        if (!col.field) return true;
 
+        // If we haven't loaded from localStorage yet, use the default hide property
+        if (!isInitialized && col.hide) return false;
+
+        return !hiddenColumns.includes(col.field);
+      })
+      .map((col) => ({
+        ...col,
+        hide: false, // Ensure grid shows columns that are not in hiddenColumns
+      }));
+  }, [initialColumnDefs, hiddenColumns, isInitialized]);
 
   const onGridReady = useCallback((params: GridReadyEvent) => {
     gridApiRef.current = params.api;
-  }, []);
+    onGridReadyProp?.(params);
+  }, [onGridReadyProp]);
 
-  const onRowClickedHandler = useCallback((event: any) => {
-    if (onRowClicked) {
-      onRowClicked(event.data);
-    }
-  }, [onRowClicked]);
+  const onRowClickedHandler = useCallback(
+    (event: any) => {
+      if (onRowClicked) {
+        onRowClicked(event.data);
+      }
+    },
+    [onRowClicked]
+  );
 
   const handleRowSelection = useCallback(() => {
     if (gridApiRef.current) {
       const selectedRows = gridApiRef.current.getSelectedRows() as RowData[];
       setSelectedRowData(selectedRows.length > 0 ? selectedRows : null);
+      // Call parent's callback if provided
+      if (onSelectionChanged) {
+        onSelectionChanged(selectedRows);
+      }
     }
-  }, []);
+  }, [onSelectionChanged]);
 
-  const onColumnMoved = useCallback((event: ColumnMovedEvent) => {
-
-  }, []);
+  const onColumnMoved = useCallback((event: ColumnMovedEvent) => { }, []);
 
   // Returns the currently displayed (filtered and sorted) rows
   const getDisplayedRows = useCallback((): RowData[] => {
@@ -173,13 +236,17 @@ export function AGGridTable({
       const selectedRow = selectedRowData[0];
       const displayedRows = getDisplayedRows();
       // Find the index of the selected row within the CURRENTLY DISPLAYED rows (after filters/sorts)
-      const index = displayedRows.findIndex(row => {
+      const index = displayedRows.findIndex((row) => {
         // Try to match by various ID fields
         if (selectedRow.id && row.id) return selectedRow.id === row.id;
-        if (selectedRow.sessionid && row.sessionid) return selectedRow.sessionid === row.sessionid;
-        if (selectedRow.leadid && row.leadid) return selectedRow.leadid === row.leadid;
-        if (selectedRow.candidateid && row.candidateid) return selectedRow.candidateid === row.candidateid;
-        if (selectedRow.batchid && row.batchid) return selectedRow.batchid === row.batchid;
+        if (selectedRow.sessionid && row.sessionid)
+          return selectedRow.sessionid === row.sessionid;
+        if (selectedRow.leadid && row.leadid)
+          return selectedRow.leadid === row.leadid;
+        if (selectedRow.candidateid && row.candidateid)
+          return selectedRow.candidateid === row.candidateid;
+        if (selectedRow.batchid && row.batchid)
+          return selectedRow.batchid === row.batchid;
         // Fallback to comparing all properties
         return JSON.stringify(selectedRow) === JSON.stringify(row);
       });
@@ -188,12 +255,15 @@ export function AGGridTable({
     }
   }, [selectedRowData, getDisplayedRows]);
 
-  const handleViewNavigation = useCallback((newIndex: number) => {
-    const displayedRows = getDisplayedRows();
-    if (displayedRows && newIndex >= 0 && newIndex < displayedRows.length) {
-      setCurrentViewIndex(newIndex);
-    }
-  }, [getDisplayedRows]);
+  const handleViewNavigation = useCallback(
+    (newIndex: number) => {
+      const displayedRows = getDisplayedRows();
+      if (displayedRows && newIndex >= 0 && newIndex < displayedRows.length) {
+        setCurrentViewIndex(newIndex);
+      }
+    },
+    [getDisplayedRows]
+  );
 
   const handleEdit = useCallback(() => {
     if (selectedRowData && selectedRowData.length > 0) {
@@ -203,44 +273,63 @@ export function AGGridTable({
 
   const handleDelete = useCallback(() => {
     if (selectedRowData && selectedRowData.length > 0) {
-      setDeleteConfirmData(selectedRowData[0]);
+      if (skipDeleteConfirmation) {
+        // Skip confirmation, call onRowDeleted directly
+        const rowToDelete = selectedRowData[0];
+        if (onRowDeleted) {
+          if (rowToDelete.leadid) onRowDeleted(rowToDelete.leadid);
+          else if (rowToDelete.candidateid) onRowDeleted(rowToDelete.candidateid);
+          else if (rowToDelete.id) onRowDeleted(rowToDelete.id);
+          else if (rowToDelete.batchid) onRowDeleted(rowToDelete.batchid);
+          else if (rowToDelete.sessionid) onRowDeleted(rowToDelete.sessionid);
+        }
+        setSelectedRowData(null);
+      } else {
+        setDeleteConfirmData(selectedRowData[0]);
+      }
     }
-  }, [selectedRowData]);
+  }, [selectedRowData, skipDeleteConfirmation, onRowDeleted]);
 
   const confirmDelete = useCallback(() => {
     if (deleteConfirmData && onRowDeleted) {
       if (deleteConfirmData.leadid) onRowDeleted(deleteConfirmData.leadid);
-      else if (deleteConfirmData.candidateid) onRowDeleted(deleteConfirmData.candidateid);
+      else if (deleteConfirmData.candidateid)
+        onRowDeleted(deleteConfirmData.candidateid);
       else if (deleteConfirmData.id) onRowDeleted(deleteConfirmData.id);
-      else if (deleteConfirmData.batchid) onRowDeleted(deleteConfirmData.batchid);
-      else if (deleteConfirmData.sessionid) onRowDeleted(deleteConfirmData.sessionid);
+      else if (deleteConfirmData.batchid)
+        onRowDeleted(deleteConfirmData.batchid);
+      else if (deleteConfirmData.sessionid)
+        onRowDeleted(deleteConfirmData.sessionid);
 
       setSelectedRowData(null);
       setDeleteConfirmData(null);
     }
   }, [deleteConfirmData, onRowDeleted]);
 
+  const handleSave = useCallback(
+    (updatedData: RowData) => {
+      if (gridRef.current) {
+        gridRef.current.api.applyTransaction({ update: [updatedData] });
+      }
 
-  const handleSave = useCallback((updatedData: RowData) => {
-  
-    if (gridRef.current) {
-      gridRef.current.api.applyTransaction({ update: [updatedData] });
-    }
+      if (onRowUpdated) onRowUpdated(updatedData);
 
-    if (onRowUpdated) onRowUpdated(updatedData);
+      setEditData(null);
+      setSelectedRowData(null);
+    },
+    [onRowUpdated]
+  );
 
-    setEditData(null);
-    setSelectedRowData(null);
-  }, [onRowUpdated]);
+  const onCellValueChanged = useCallback(
+    (event: CellValueChangedEvent) => {
+      if (gridRef.current) {
+        gridRef.current.api.applyTransaction({ update: [event.data] });
+      }
 
-  const onCellValueChanged = useCallback((event: CellValueChangedEvent) => {
- 
-    if (gridRef.current) {
-      gridRef.current.api.applyTransaction({ update: [event.data] });
-    }
-
-    if (onRowUpdated) onRowUpdated(event.data);
-  }, [onRowUpdated]);
+      if (onRowUpdated) onRowUpdated(event.data);
+    },
+    [onRowUpdated]
+  );
   const handleDownload = useCallback(() => {
     if (gridApiRef.current) {
       gridApiRef.current.exportDataAsCsv({
@@ -249,32 +338,102 @@ export function AGGridTable({
     }
   }, [title]);
 
-
-  const toggleColumnVisibility = useCallback((field: string, isVisible: boolean) => {
-    setHiddenColumns(prev => isVisible
-      ? prev.filter(col => col !== field)
-      : [...prev, field]
-    );
-  }, []);
+  const toggleColumnVisibility = useCallback(
+    (field: string, isVisible: boolean) => {
+      setHiddenColumns((prev) =>
+        isVisible ? prev.filter((col) => col !== field) : [...prev, field]
+      );
+    },
+    []
+  );
 
   const resetColumns = useCallback(() => {
-    setHiddenColumns([]);
-  }, []);
+    const defaultHidden = initialColumnDefs
+      .filter((col) => col.hide && col.field)
+      .map((col) => col.field as string);
+    setHiddenColumns(defaultHidden);
+  }, [initialColumnDefs]);
 
   const paginationNumberFormatter = useCallback((params: any) => {
     return `${params.value.toLocaleString()}`;
   }, []);
 
-  return (
-    <div className="mx-auto space-y-4 w-full max-w-7xl flex-row-reverse">
+  // const AGGridTable = () => {
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const addInitialData = useMemo(() => {
+    if (rowData && rowData.length > 0) {
+      const sample = rowData[0];
+      const blank: Record<string, any> = {};
+      Object.keys(sample).forEach((k) => {
+        const v = (sample as any)[k];
+        if (typeof v === "boolean") blank[k] = "";
+        else if (typeof v === "number") blank[k] = "";
+        else blank[k] = "";
+      });
+      return blank;
+    }
+    // fallback: build from column defs
+    const fields = initialColumnDefs
+      .map((c) => c.field)
+      .filter(Boolean) as string[];
+    return fields.reduce((acc: any, f: string) => {
+      acc[f] = "";
+      return acc;
+    }, {});
+  }, [rowData, initialColumnDefs]);
 
-      <div className="flex items-center justify-between justify-end">
+  const handleAdd = () => {
+    if (onAddClick) {
+      onAddClick();
+      return;
+    }
+    setIsAddModalOpen(true);
+  };
+
+  const handleAddSave = useCallback(
+    (newData: RowData) => {
+      if (gridRef.current) {
+        gridRef.current.api.applyTransaction({ add: [newData] });
+      }
+      if (onRowAdded) onRowAdded(newData);
+      else if (onRowUpdated) onRowUpdated(newData);
+      setIsAddModalOpen(false);
+    },
+    [onRowAdded, onRowUpdated]
+  );
+
+  // Add this condition to check if we should hide the add button
+  const shouldHideAddButton = useMemo(() => {
+    if (!title) return false;
+    const lowerTitle = title.toLowerCase();
+    if (lowerTitle.includes("placement fee")) return false;
+    return (
+      lowerTitle.includes("preparation") ||
+      lowerTitle.includes("marketing") ||
+      lowerTitle.includes("placement")
+    );
+  }, [title]);
+
+  return (
+    <div className="mx-auto w-full max-w-7xl flex-row-reverse space-y-4">
+      <div className="flex items-center justify-end justify-between">
         {title && (
           <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {title}
           </h3>
         )}
-        <div className="flex items-center space-x-2  ml-auto">
+        <div className="ml-auto flex items-center  space-x-2">
+          {!shouldHideAddButton && showAddButton !== false && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAdd}
+              className="flex h-8 w-8 items-center justify-center p-0 font-bold text-green-600 hover:text-blue-700 dark:text-green-400"
+              title="Add New"
+            >
+              +
+            </Button>
+          )}
 
           <Button
             variant="outline"
@@ -330,7 +489,8 @@ export function AGGridTable({
 
       <div className="flex justify-center">
         <div
-          className={`ag-theme-alpine ${isDarkMode ? "ag-grid-dark-mode" : ""} rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm w-full`}
+          className={`ag-theme-alpine ${isDarkMode ? "ag-grid-dark-mode" : ""
+            } w-full rounded-lg border border-gray-200 shadow-sm dark:border-gray-700`}
           style={{ height: "calc(100vh - 260px)", minHeight: "400px" }}
         >
           <AgGridReact
@@ -340,6 +500,9 @@ export function AGGridTable({
             onGridReady={onGridReady}
             onRowClicked={onRowClickedHandler}
             onSelectionChanged={handleRowSelection}
+            onFilterChanged={() => {
+              onFilterChanged?.();
+            }}
             onColumnMoved={onColumnMoved}
             onCellValueChanged={onCellValueChanged}
             animateRows={true}
@@ -349,8 +512,11 @@ export function AGGridTable({
             defaultColDef={{
               resizable: true,
               sortable: true,
-
               filter: true,
+              filterParams: {
+                debounceMs: 500,
+                suppressAndOrCondition: true,
+              },
               cellClass: "custom-cell-style",
               editable: true,
             }}
@@ -362,6 +528,12 @@ export function AGGridTable({
             paginationPageSizeSelector={[10, 25, 50, 100]}
             paginationNumberFormatter={paginationNumberFormatter}
             maintainColumnOrder={true}
+            getRowId={getRowNodeId || ((params: any) => {
+              return params.data.unique_id || params.data.id || params.data.leadid || params.data.candidateid || params.data.batchid || params.data.sessionid;
+            })}
+            isRowSelectable={(node) => {
+              return node.displayed;
+            }}
           />
         </div>
       </div>
@@ -371,7 +543,7 @@ export function AGGridTable({
         onClose={() => setIsColumnModalOpen(false)}
       >
         <div className="space-y-4">
-          <div className="flex justify-between items-center">
+          <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold">Column Visibility</h3>
             <Button
               variant="ghost"
@@ -382,26 +554,29 @@ export function AGGridTable({
               Reset All
             </Button>
           </div>
-          <div className="grid grid-cols-2 gap-2 max-h-[400px] overflow-y-auto pr-2">
-            {initialColumnDefs.map((col) => (
-              col.field && (
-                <div key={col.field} className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    id={`col-${col.field}`}
-                    checked={!hiddenColumns.includes(col.field)}
-                    onChange={(e) => toggleColumnVisibility(col.field, e.target.checked)}
-                    className="h-4 w-4"
-                  />
-                  <label
-                    htmlFor={`col-${col.field}`}
-                    className="text-sm font-medium"
-                  >
-                    {col.headerName || col.field}
-                  </label>
-                </div>
-              )
-            ))}
+          <div className="grid max-h-[400px] grid-cols-2 gap-2 overflow-y-auto pr-2">
+            {initialColumnDefs.map(
+              (col) =>
+                col.field && (
+                  <div key={col.field} className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id={`col-${col.field}`}
+                      checked={!hiddenColumns.includes(col.field)}
+                      onChange={(e) =>
+                        toggleColumnVisibility(col.field, e.target.checked)
+                      }
+                      className="h-4 w-4"
+                    />
+                    <label
+                      htmlFor={`col-${col.field}`}
+                      className="text-sm font-medium"
+                    >
+                      {col.headerName || col.field}
+                    </label>
+                  </div>
+                )
+            )}
           </div>
           <div className="flex justify-end pt-4">
             <Button
@@ -414,6 +589,18 @@ export function AGGridTable({
           </div>
         </div>
       </ColumnVisibilityModal>
+
+      {isAddModalOpen && (
+        <EditModal
+          isOpen={true}
+          onClose={() => setIsAddModalOpen(false)}
+          onSave={handleAddSave}
+          data={addInitialData}
+          title={title || "Record"}
+          batches={batches}
+          isAddMode={true} // Add this line
+        />
+      )}
 
       {viewData && (
         <ViewModal
@@ -435,6 +622,7 @@ export function AGGridTable({
           batches={batches}
         />
       )}
+
       {deleteConfirmData && (
         <ConfirmDialog
           isOpen={true}
@@ -442,8 +630,10 @@ export function AGGridTable({
           onConfirm={confirmDelete}
           title="Delete Record"
           message={`Are you sure you want to delete this record?${deleteConfirmData.fullName || deleteConfirmData.company
-            ? `\n\nRecord: ${deleteConfirmData.fullName || deleteConfirmData.company}`
-            : ""}`}
+            ? `\n\nRecord: ${deleteConfirmData.fullName || deleteConfirmData.company
+            }`
+            : ""
+            }`}
           confirmText="Delete"
           cancelText="Cancel"
         />
@@ -453,4 +643,3 @@ export function AGGridTable({
 }
 
 export default AGGridTable;
-

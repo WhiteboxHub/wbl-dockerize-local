@@ -1,9 +1,10 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, extract, or_, and_, case
+from sqlalchemy.orm import Session,aliased
+from sqlalchemy import func, desc, extract, or_, and_, case,text, String, cast, literal_column
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, List
-from fapi.db.models import Batch, CandidateORM, CandidateMarketingORM, CandidatePlacementORM, CandidateInterview, EmployeeORM, LeadORM
-
+from fapi.db.models import Batch, CandidateORM, CandidateMarketingORM, CandidatePlacementORM, CandidateInterview, EmployeeORM, LeadORM, CandidatePreparation, Vendor, VendorContactExtractsORM, Recording, RecordingBatch, EmployeeTaskORM, JobTypeORM, JobActivityLogORM, PlacementFeeCollection, AmountCollectedEnum
+from fapi.db.schemas import CandidatePreparationMetrics, EmployeeTaskMetrics, JobsMetrics
+import re
 
 def get_batch_metrics(db: Session) -> Dict[str, Any]:
     today = date.today()
@@ -60,12 +61,15 @@ def get_batch_metrics(db: Session) -> Dict[str, Any]:
     new_enrollments_month = db.query(CandidateORM).filter(
         CandidateORM.enrolled_date >= first_day_month
     ).count()
-    # Candidate Status Breakdown
     status_breakdown = db.query(
         CandidateORM.status,
         func.count(CandidateORM.id)
     ).group_by(CandidateORM.status).all()
     status_dict = {status: count for status, count in status_breakdown}
+    
+    # Add Total Placements to status breakdown
+    total_placements = db.query(CandidatePlacementORM).count()
+    status_dict["Placements"] = total_placements
     return {
         "current_active_batches": current_active_batches_str,
         "current_active_batches_count": current_active_batches_count,
@@ -79,6 +83,8 @@ def get_batch_metrics(db: Session) -> Dict[str, Any]:
 
 def get_financial_metrics(db: Session) -> Dict[str, Any]:
     today = date.today()
+
+    # Current batch
     current_batch = (
         db.query(Batch)
         .filter(Batch.startdate <= today, Batch.enddate >= today)
@@ -94,12 +100,13 @@ def get_financial_metrics(db: Session) -> Dict[str, Any]:
             .scalar()
             or 0
         )
-    # fee collected in last batch
+
+    # Previous batch
     previous_batch = (
         db.query(Batch)
-        .filter(Batch.startdate < today) 
+        .filter(Batch.startdate < today)
         .order_by(desc(Batch.startdate))
-        .offset(1) 
+        .offset(1)
         .first()
     )
 
@@ -111,25 +118,69 @@ def get_financial_metrics(db: Session) -> Dict[str, Any]:
             .scalar()
             or 0
         )
+        
+    # Top 5 Batches (Zig-Zag Pattern)
+    # Latest 5 Previous Batches
+    query = (
+        db.query(
+            Batch.batchname,
+            func.sum(CandidateORM.fee_paid).label("total_fee")
+        )
+        .join(CandidateORM, CandidateORM.batchid == Batch.batchid)
+    )
+    
+    if current_batch:
+        query = query.filter(Batch.batchid != current_batch.batchid)
+        
+    latest_previous_batches = (
+        query.group_by(Batch.batchid, Batch.batchname, Batch.startdate)
+        .order_by(desc(Batch.startdate))
+        .limit(5)
+        .all()
+    )
 
-    # Top 5 Batches by Fee Collection
-    top_batches = db.query(
-        Batch.batchname,
-        func.sum(CandidateORM.fee_paid).label("total_fee")
-    ).join(
-        CandidateORM,
-        CandidateORM.batchid == Batch.batchid
-    ).group_by(Batch.batchid).order_by(
-        desc("total_fee")
-    ).limit(5).all()
     top_batches_list = [
-        {"batch_name": name, "total_fee": float(total_fee)}
-        for name, total_fee in top_batches
+        {"batch_name": name, "total_fee": float(total_fee or 0)}
+        for name, total_fee in latest_previous_batches
     ]
+
+    # Placement Fee Collection Metrics
+    total_expected = db.query(func.sum(PlacementFeeCollection.deposit_amount)).scalar() or 0
+    total_collected = db.query(func.sum(PlacementFeeCollection.deposit_amount)).filter(
+        PlacementFeeCollection.amount_collected == AmountCollectedEnum.yes
+    ).scalar() or 0
+    total_pending = float(total_expected) - float(total_collected)
+
+    first_day_month = today.replace(day=1)
+    collected_this_month = db.query(func.sum(PlacementFeeCollection.deposit_amount)).filter(
+        PlacementFeeCollection.amount_collected == AmountCollectedEnum.yes,
+        PlacementFeeCollection.deposit_date >= first_day_month
+    ).scalar() or 0
+
+    completed_installments = db.query(PlacementFeeCollection).filter(
+        PlacementFeeCollection.amount_collected == AmountCollectedEnum.yes
+    ).count()
+    pending_installments = db.query(PlacementFeeCollection).filter(
+        PlacementFeeCollection.amount_collected == AmountCollectedEnum.no
+    ).count()
+
+    placement_fee_metrics = {
+        "total_expected": float(total_expected),
+        "total_collected": float(total_collected),
+        "total_pending": float(total_pending),
+        "collected_this_month": float(collected_this_month),
+        "installment_stats": {
+            "completed": completed_installments,
+            "pending": pending_installments
+        }
+    }
+
+    # Final output
     return {
-        "total_fee_current_batch": total_fee_current_batch,
-        "fee_collected_previous_batch": total_fee_previous_batch,
-        "top_batches_fee": top_batches_list
+        "total_fee_current_batch": float(total_fee_current_batch),
+        "fee_collected_previous_batch": float(total_fee_previous_batch),
+        "top_batches_fee": top_batches_list,
+        "placement_fee_metrics": placement_fee_metrics
     }
 
 
@@ -181,7 +232,7 @@ def get_placement_metrics(db: Session) -> Dict[str, Any]:
         }
     # Currently Active Placements
     active_placements = db.query(CandidatePlacementORM).filter(
-        CandidatePlacementORM.status == "scheduled"
+        CandidatePlacementORM.status == "Active"
     ).count()
     return {
         "total_placements": total_placements,
@@ -207,14 +258,33 @@ def get_interview_metrics(db: Session) -> Dict[str, Any]:
         extract('month', CandidateInterview.interview_date) == today.month,
         extract('year', CandidateInterview.interview_date) == today.year
     ).count()
-    # Candidates in Marketing Phase
-    marketing_candidates = db.query(CandidateORM.full_name).join( 
-    CandidateMarketingORM, 
-    CandidateMarketingORM.candidate_id == CandidateORM.id 
-    ).filter( 
-        CandidateMarketingORM.status == "active" 
-    ).all() 
-    # Interview Feedback Breakdown
+
+    # Interviews Today
+    interviews_today = db.query(CandidateInterview).filter(
+        func.date(CandidateInterview.interview_date) == today
+    ).count()
+
+    marketing_candidates = db.query(CandidateORM).join(
+        CandidateMarketingORM,
+        CandidateMarketingORM.candidate_id == CandidateORM.id
+    ).filter(
+        CandidateMarketingORM.status == "active"
+    ).all()
+
+    priority_1_candidates = db.query(CandidateMarketingORM).filter(
+        CandidateMarketingORM.status == "active",
+        CandidateMarketingORM.priority == 1
+    ).count()
+
+    priority_2_candidates = db.query(CandidateMarketingORM).filter(
+        CandidateMarketingORM.status == "active",
+        CandidateMarketingORM.priority == 2
+    ).count()
+
+    priority_3_candidates = db.query(CandidateMarketingORM).filter(
+        CandidateMarketingORM.status == "active",
+        CandidateMarketingORM.priority == 3
+    ).count()    # Interview Feedback Breakdown
     feedback_breakdown = db.query(
         CandidateInterview.feedback,
         func.count(CandidateInterview.id)
@@ -229,7 +299,11 @@ def get_interview_metrics(db: Session) -> Dict[str, Any]:
         "upcoming_interviews": upcoming_interviews,
         "total_interviews": total_interviews,
         "interviews_month": interviews_month,
+        "interviews_today": interviews_today,
         "marketing_candidates":  len(marketing_candidates),
+        "priority_1_candidates": priority_1_candidates,
+        "priority_2_candidates": priority_2_candidates,
+        "priority_3_candidates": priority_3_candidates,
         "feedback_breakdown": feedback_dict
     }
 
@@ -251,23 +325,37 @@ def get_upcoming_batches(db: Session, limit: int = 3) -> List[Dict[str, Any]]:
 # Top batch revenue
 def get_top_batches_revenue(db: Session, limit: int = 5) -> List[Dict[str, Any]]:
     try:
-        top_batches = db.query(
+        today = date.today()
+        # Find current active batch to exclude
+        current_batch = db.query(Batch).filter(
+            Batch.startdate <= today,
+            Batch.enddate >= today
+        ).order_by(desc(Batch.startdate)).first()
+
+        query = db.query(
             Batch.batchname,
             func.sum(CandidateORM.fee_paid).label("total_revenue"),
             func.count(CandidateORM.id).label("candidate_count")
         ).join(
             CandidateORM,
             CandidateORM.batchid == Batch.batchid
-        ).group_by(
+        )
+
+        if current_batch:
+            query = query.filter(Batch.batchid != current_batch.batchid)
+
+        top_batches = query.group_by(
             Batch.batchid,
-            Batch.batchname
+            Batch.batchname,
+            Batch.startdate
         ).order_by(
-            desc("total_revenue")
+            desc(Batch.startdate)
         ).limit(limit).all()
+
         return [
             {
                 "batch_name": name,
-                "total_revenue": float(total_revenue),
+                "total_revenue": float(total_revenue or 0),
                 "candidate_count": candidate_count
             }
             for name, total_revenue, candidate_count in top_batches
@@ -377,6 +465,7 @@ def candidate_interview_performance(db: Session):
         .join(CandidateMarketingORM, CandidateMarketingORM.candidate_id == CandidateORM.id)
         .outerjoin(CandidateInterview, CandidateInterview.candidate_id == CandidateORM.id)
         .group_by(CandidateORM.id, CandidateORM.full_name)
+        .having(func.count(CandidateInterview.id) > 0)  
         .all()
     )
 
@@ -390,3 +479,175 @@ def candidate_interview_performance(db: Session):
         for row in results
     ]
 
+
+
+
+def get_candidate_preparation_metrics(db: Session):
+    total_preparation_candidates = db.query(func.count(CandidatePreparation.id)).scalar() or 0
+    active_candidates = db.query(func.count(CandidatePreparation.id)).filter(
+        CandidatePreparation.status == "Active"
+    ).scalar() or 0
+    inactive_candidates = db.query(func.count(CandidatePreparation.id)).filter(
+        CandidatePreparation.status == "Inactive"
+    ).scalar() or 0
+
+    return CandidatePreparationMetrics(
+        total_preparation_candidates=total_preparation_candidates,
+        active_candidates=active_candidates,
+        inactive_candidates=inactive_candidates
+    )
+
+
+def get_vendor_stats(db: Session):
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=today_start.weekday()) 
+
+    total_vendors = db.query(func.count(Vendor.id)).scalar()
+    today_extracted = (
+        db.query(func.count(VendorContactExtractsORM.id))
+        .filter(
+            and_(
+                VendorContactExtractsORM.email.isnot(None),
+                VendorContactExtractsORM.created_at >= today_start,
+            )
+        )
+        .scalar()
+    )
+    week_extracted = (
+        db.query(func.count(VendorContactExtractsORM.id))
+        .filter(
+            and_(
+                VendorContactExtractsORM.email.isnot(None),
+                VendorContactExtractsORM.created_at >= week_start,
+            )
+        )
+        .scalar()
+    )
+    return {
+        "total_vendors": total_vendors or 0,
+        "today_extracted": today_extracted or 0,
+        "week_extracted": week_extracted or 0,
+    }
+
+
+
+
+def get_classes_per_latest_batches(db: Session, limit: int = 5):
+    latest_batches_subq = (
+        db.query(Batch.batchid)
+        .order_by(desc(Batch.startdate))
+        .limit(limit)
+        .subquery()
+    )
+
+    result = (
+        db.query(
+            Batch.batchname,
+            func.count(Recording.id).label("classes_count"),
+            func.max(Batch.startdate).label("max_startdate")
+        )
+        .join(RecordingBatch, RecordingBatch.batch_id == Batch.batchid)
+        .join(Recording, Recording.id == RecordingBatch.recording_id)
+        .filter(Batch.batchid.in_(latest_batches_subq))
+        .group_by(Batch.batchname)
+        .order_by(desc(func.max(Batch.startdate)))
+        .all()
+    )
+
+    return result
+
+def get_employee_task_metrics(db: Session) -> EmployeeTaskMetrics:
+    today = date.today()
+    total_tasks = db.query(EmployeeTaskORM).count()
+    pending_tasks = db.query(EmployeeTaskORM).filter(EmployeeTaskORM.status == "pending").count()
+    in_progress_tasks = db.query(EmployeeTaskORM).filter(EmployeeTaskORM.status == "in_progress").count()
+    completed_tasks = db.query(EmployeeTaskORM).filter(EmployeeTaskORM.status == "completed").count()
+    overdue_tasks = db.query(EmployeeTaskORM).filter(
+        and_(
+            EmployeeTaskORM.status != "completed",
+            EmployeeTaskORM.due_date < today
+        )
+    ).count()
+
+    return EmployeeTaskMetrics(
+        total_tasks=total_tasks,
+        pending_tasks=pending_tasks,
+        in_progress_tasks=in_progress_tasks,
+        completed_tasks=completed_tasks,
+        overdue_tasks=overdue_tasks
+    )
+
+
+def get_job_metrics(db: Session) -> JobsMetrics:
+    today = date.today()
+    week_ago = today - timedelta(days=7)
+    
+    total_job_types = db.query(JobTypeORM).count()
+    total_activities = db.query(func.sum(JobActivityLogORM.activity_count)).scalar() or 0
+    activities_today = db.query(func.sum(JobActivityLogORM.activity_count)).filter(
+        JobActivityLogORM.activity_date == today
+    ).scalar() or 0
+    activities_this_week = db.query(func.sum(JobActivityLogORM.activity_count)).filter(
+        JobActivityLogORM.activity_date >= week_ago
+    ).scalar() or 0
+    
+    recent_logs = (
+        db.query(JobActivityLogORM, JobTypeORM.name.label("job_name"))
+        .join(JobTypeORM, JobActivityLogORM.job_type_id == JobTypeORM.id)
+        .order_by(JobActivityLogORM.activity_date.desc())
+        .limit(10)
+        .all()
+    )
+    
+    recent_activities = []
+    for log, job_name in recent_logs:
+        recent_activities.append({
+            "id": log.id,
+            "job_name": job_name,
+            "activity_date": log.activity_date.isoformat() if log.activity_date else None,
+            "activity_count": log.activity_count,
+            "notes": log.notes
+        })
+        
+    return JobsMetrics(
+        total_job_types=total_job_types,
+        total_activities=int(total_activities),
+        activities_today=int(activities_today),
+        activities_this_week=int(activities_this_week),
+        recent_activities=recent_activities
+    )
+
+
+# Dashboard-specific functions for employee tasks and jobs
+def get_tasks_by_employee_id_for_dashboard(db: Session, employee_id: int) -> List[dict]:
+    tasks = db.query(EmployeeTaskORM).filter(EmployeeTaskORM.employee_id == employee_id).all()
+    result = []
+    for t in tasks:
+        # Strip HTML tags from task description for clean dashboard display
+        clean_task = re.sub(r'<[^>]*>', '', t.task) if t.task else ""
+        result.append({
+            "id": t.id,
+            "employee_id": t.employee_id,
+            "employee_name": t.employee.name if t.employee else None,
+            "task": clean_task,  # Plain text for dashboard
+            "assigned_date": t.assigned_date,
+            "due_date": t.due_date,
+            "status": t.status,
+            "priority": t.priority,
+            "notes": t.notes
+        })
+    return result
+
+def get_job_types_by_employee_id_for_dashboard(db: Session, employee_id: int) -> List[dict]:
+    try:
+        rows = db.query(JobTypeORM.id, JobTypeORM.name, JobTypeORM.unique_id).filter(
+            or_(
+                JobTypeORM.job_owner_1 == employee_id,
+                JobTypeORM.job_owner_2 == employee_id,
+                JobTypeORM.job_owner_3 == employee_id
+            )
+        ).all()
+        return [{"id": r.id, "name": r.name, "unique_id": r.unique_id} for r in rows]
+    except Exception:
+        return []

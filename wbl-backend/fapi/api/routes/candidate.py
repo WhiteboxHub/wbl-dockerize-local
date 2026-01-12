@@ -5,11 +5,12 @@ from fapi.utils.avatar_dashboard_utils import (
     get_placement_metrics,
     get_interview_metrics,
     candidate_interview_performance,
+    get_candidate_preparation_metrics
 )
 
 from fastapi import APIRouter, Query, Path, HTTPException,Depends
 from fapi.utils import candidate_utils                                         
-from fapi.db.schemas import CandidateBase, CandidateUpdate, PaginatedCandidateResponse,CandidatePlacementUpdate,CandidatePlacement,  CandidateMarketing,CandidatePlacementCreate,CandidateMarketingCreate,CandidateInterviewOut, CandidateCreate,CandidateInterviewCreate, CandidateInterviewUpdate,CandidatePreparationCreate,CandidatePreparationUpdate,CandidatePreparationOut, PlacementMetrics, InterviewMetrics, CandidateInterviewPerformanceResponse
+from fapi.db.schemas import CandidateBase, CandidateUpdate, PaginatedCandidateResponse,CandidatePlacementUpdate,CandidatePlacement,  CandidateMarketing,CandidatePlacementCreate,CandidateMarketingCreate,CandidateInterviewOut, CandidateCreate,CandidateInterviewCreate, CandidateInterviewUpdate,CandidatePreparationCreate,CandidatePreparationUpdate,CandidatePreparationOut, PlacementMetrics, InterviewMetrics, CandidateInterviewPerformanceResponse,CandidatePreparationMetrics
 from fapi.db.models import CandidateInterview,CandidateORM,CandidatePreparation, CandidateMarketingORM, CandidatePlacementORM, Batch , AuthUserORM
 
 from sqlalchemy.orm import Session,joinedload,selectinload
@@ -29,8 +30,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 security = HTTPBearer()
 
-
-# ------------------------Candidate------------------------------------
 
 @router.get("/candidates", response_model=PaginatedCandidateResponse)
 def list_candidates(
@@ -99,10 +98,6 @@ def delete_candidate(candidate_id: int):
 
 
 
-# ------------------- Marketing -------------------
-
-
-
 @router.get("/candidate/marketing", summary="Get all candidate marketing records")
 def read_all_marketing(
     page: int = Query(1, ge=1),
@@ -111,7 +106,6 @@ def read_all_marketing(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ):
     return candidate_utils.get_all_marketing_records( page, limit)
-
 
 
 @router.get("/candidate/marketing/{record_id}", summary="Get marketing record by ID")
@@ -130,9 +124,6 @@ def update_marketing_record(record_id: int, record: CandidateMarketingCreate):
 def delete_marketing_record(record_id: int):
     return candidate_utils.delete_marketing(record_id)
 
-
-
-# -------------------Candidate_Placements -------------------
 
 
 @router.get("/candidate/placements")
@@ -203,6 +194,7 @@ def get_candidate_interview_performance(
     }
 
 # -------------------Candidate_interview -------------------
+
 @router.post("/interviews", response_model=CandidateInterviewOut)
 def create_interview(
     interview: CandidateInterviewCreate,
@@ -253,10 +245,9 @@ def delete_interview(interview_id: int, db: Session = Depends(get_db)):
 def create_prep(prep: CandidatePreparationCreate, db: Session = Depends(get_db)):
     return candidate_utils.create_candidate_preparation(db, prep)
 
-
 @router.get("/candidate_preparation/{prep_id}", response_model=CandidatePreparationOut)
 def get_prep(prep_id: int, db: Session = Depends(get_db)):
-    prep = candidate_utils.get_candidate_preparation(db, prep_id)
+    prep = candidate_utils.get_preparation_by_id(db, prep_id)
     if not prep:
         raise HTTPException(status_code=404, detail="Candidate preparation not found")
     return prep
@@ -295,6 +286,11 @@ def delete_prep(
         raise HTTPException(status_code=404, detail="Candidate preparation not found")
     return deleted
 
+
+@router.get("/candidate/preparation/metrics", response_model=CandidatePreparationMetrics)
+def read_candidate_preparation_metrics(db: Session = Depends(get_db)):
+    return get_candidate_preparation_metrics(db)
+
 ##--------------------------------search----------------------------------
 
 
@@ -321,3 +317,19 @@ def get_candidate_details(candidate_id: int, db: Session = Depends(get_db)):
 @router.get("/candidates/sessions/{candidate_id}")
 def get_candidate_sessions_route(candidate_id: int, db: Session = Depends(get_db)):
     return candidate_utils.get_candidate_sessions(candidate_id, db)
+
+
+@router.get("/candidates-with-interviews")
+def get_candidates_with_interviews(db: Session = Depends(get_db)):
+    """Get all candidates who have at least one interview record"""
+    try:
+        candidates = (
+            db.query(CandidateORM)
+            .join(CandidateInterview)
+            .distinct()
+            .all()
+        )
+        return [{"id": c.id, "full_name": c.full_name} for c in candidates]
+    except Exception as e:
+        logger.error(f"Failed to fetch candidates with interviews: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

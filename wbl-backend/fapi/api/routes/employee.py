@@ -6,11 +6,15 @@ from fapi.db.database import SessionLocal, get_db
 from fapi.db import models, schemas
 from typing import List, Dict
 from fapi.db.schemas import Employee, EmployeeCreate, EmployeeUpdate,EmployeeDetailSchema
+from sqlalchemy.exc import IntegrityError
 from fapi.utils.employee_search_utils import (
     search_employees,
     get_employee_details,
     get_employee_candidates,
      get_employee_sessions_and_recordings,
+     get_employee_jobs,
+     get_employee_tasks,
+     get_employee_placements,
 )
 from typing import List
 from fapi.utils.employee_utils import (
@@ -27,7 +31,7 @@ router = APIRouter()
 
 security = HTTPBearer()
 
-@router.get("/employees", response_model=list[Employee])
+@router.get("/employees", response_model=List[Employee])
 def get_employees(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ):
@@ -38,50 +42,51 @@ def get_employees(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/employee-birthdays")
-def employee_birthdays(db: Session = Depends(get_db)):
-    birthdays = get_employee_birthdays(db)
-    return birthdays
-
-
 @router.post("/employees", response_model=Employee)
-def create_employee(employee_data: EmployeeCreate, db: Session = Depends(get_db)):
+def create_employee(payload: EmployeeCreate):
     try:
- 
-        if not employee_data.name or not employee_data.email:
-            raise HTTPException(status_code=400, detail="Name and email are required")
+        employee = create_employee_db(payload.model_dump())
+        return employee
 
-        db_employee = EmployeeORM(**employee_data.model_dump())
-        db.add(db_employee)
-        db.commit()
-        db.refresh(db_employee)
-        return db_employee
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create employee: {str(e)}")
-
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail="Employee with this email already exists"
+        )
 
 @router.put("/employees/{employee_id}", response_model=Employee)
 def update_employee(
     employee_id: int,
-    employee_data: EmployeeUpdate,  
-    db: Session = Depends(get_db)
+    employee_data: EmployeeUpdate,
 ):
     try:
-        updated_employee = update_employee_db(employee_id, employee_data.model_dump(exclude_unset=True))
-        return updated_employee
+        return update_employee_db(
+            employee_id,
+            employee_data.model_dump(exclude_unset=True),
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update employee: {str(e)}")
-    
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update employee: {str(e)}",
+        )
 
-@router.delete("/employees/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
+
+@router.delete(
+    "/employees/{employee_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 def delete_employee(employee_id: int):
     try:
         delete_employee_db(employee_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Delete failed: {str(e)}",
+        )
 
 
 # ---------------------------------employee search--------------------------------------
@@ -139,3 +144,18 @@ def get_employee_session_class_data(employee_id: int, db: Session = Depends(get_
         "session_count": len(data["sessions"]),
         "timeline": timeline
     }
+
+
+@router.get("/employees/{employee_id}/jobs")
+def get_employee_jobs_endpoint(employee_id: int, db: Session = Depends(get_db)):
+    return get_employee_jobs(db, employee_id)
+
+
+@router.get("/employees/{employee_id}/tasks")
+def get_employee_tasks_endpoint(employee_id: int, db: Session = Depends(get_db)):
+    return get_employee_tasks(db, employee_id)
+
+
+@router.get("/employees/{employee_id}/placements")
+def get_employee_placements_endpoint(employee_id: int, db: Session = Depends(get_db)):
+    return get_employee_placements(db, employee_id)

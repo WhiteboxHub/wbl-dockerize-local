@@ -1,4 +1,3 @@
-
 "use client";
 import React, { useEffect, useState } from "react";
 import { ColDef } from "ag-grid-community";
@@ -6,14 +5,123 @@ import "@/styles/admin.css";
 import "@/styles/App.css";
 import { Input } from "@/components/admin_ui/input";
 import { Label } from "@/components/admin_ui/label";
-import { SearchIcon, Plus } from "lucide-react";
-import axios from "axios";
+import { SearchIcon } from "lucide-react";
 import AGGridTable from "@/components/AGGridTable";
+import { apiFetch } from "@/lib/api";
+import { useForm } from "react-hook-form";
+import { toast, Toaster } from "sonner";
+
 
 const DateFormatter = (params: any) => {
   if (!params.value) return "";
+
   const [year, month, day] = params.value.split("-");
-  return `${month}/${day}/${year}`;
+  return `${month}/${day}/${year}`; 
+};
+
+
+const toInitCap = (name: string): string =>
+  name
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const StatusRenderer = (params: any) => {
+  const isActive = Number(params.value) === 1;
+
+  return (
+    <span
+      className={`px-2 py-1 rounded-full text-xs font-semibold ${isActive
+        ? "bg-green-100 text-green-700"
+        : "bg-red-100 text-red-700"
+        }`}
+    >
+      {isActive ? "Active" : "Inactive"}
+    </span>
+  );
+};
+
+
+const BooleanRenderer = (params: any) => {
+  return params.value === 1 ? "Yes" : "No";
+};
+
+
+const booleanValueParser = (params: any) => {
+  if (params.newValue === "Yes" || params.newValue === "Active") {
+    return 1;
+  } else if (params.newValue === "No" || params.newValue === "Inactive") {
+    return 0;
+  }
+  return params.newValue;
+};
+
+
+const formatPhoneNumber = (phone: string) => {
+  if (!phone) return "";
+
+  const digits = phone.replace(/\D/g, '');
+
+  if (digits.length === 10) {
+    return `+91 ${digits.substring(0, 5)} ${digits.substring(5)}`;
+  }
+  return phone;
+};
+
+
+const parsePhoneNumber = (phone: string) => {
+  if (!phone) return "";
+
+  return phone.replace(/[^\d+]/g, '');
+};
+
+
+const validateEmail = (email: string) => {
+  return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(email);
+};
+
+const validatePhone = (phone: string) => {
+
+  const digits = phone.replace(/\D/g, '');
+  return digits.length === 10 && /^[6-9]/.test(digits);
+};
+
+const validateAadhaar = (aadhaar: string) => {
+
+  const digits = aadhaar.replace(/\D/g, '');
+  return digits.length === 12;
+};
+
+type EmployeeFormData = {
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  state: string;
+  dob: string;
+  startdate: string;
+  enddate: string;
+  instructor: number;
+  status: number;
+  notes: string;
+  aadhaar: string;
+};
+
+const initialFormData: EmployeeFormData = {
+  name: "",
+  email: "",
+  phone: "",
+  address: "",
+  state: "",
+  dob: "",
+  startdate: "",
+  enddate: "",
+  instructor: 0,
+  status: 1,
+  notes: "",
+  aadhaar: "",
 };
 
 export default function EmployeesPage() {
@@ -24,213 +132,313 @@ export default function EmployeesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showEmployeeForm, setShowEmployeeForm] = useState(false);
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    address: "",
-    state: "",
-    dob: "",
-    startdate: "",
-    enddate: "",
-    instructor: 0,
-    status: 1,
-    notes: "",
-    aadhaar: "",
-  });
   const [formSaveLoading, setFormSaveLoading] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [dateFilter, setDateFilter] = useState<{ from?: string; to?: string }>({});
 
-  const blankEmployeeData = {
-    name: "",
-    email: "",
-    phone: "",
-    address: "",
-    state: "",
-    dob: "",
-    startdate: "",
-    enddate: "",
-    instructor: 0,
-    status: 1,
-    notes: "",
-    aadhaar: "",
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+    setValue,
+  } = useForm<EmployeeFormData>({
+    defaultValues: initialFormData,
+  });
+
+  const fetchEmployees = async () => {
+    try {
+      setLoading(true);
+      const data = await apiFetch("/api/employees");
+      const rawData = Array.isArray(data) ? data : data?.data || [];
+
+      const mappedData = rawData.map((emp: any) => {
+        const fullName = emp.name ?? `${emp.first_name ?? ""} ${emp.last_name ?? ""}`.trim();
+        return {
+          ...emp,
+          full_name: toInitCap(fullName),
+          phone: emp.phone ? formatPhoneNumber(emp.phone) : "",
+        };
+      });
+
+      setEmployees(mappedData);
+      setFilteredEmployees(mappedData);
+      setError(null);
+    } catch (e: any) {
+      console.error("Failed to fetch employees:", e);
+      setError(e?.message || "Failed to fetch employees");
+      setEmployees([]);
+      setFilteredEmployees([]);
+    } finally {
+      setLoading(false);
+      setIsLoading(false);
+    }
   };
-const token = localStorage.getItem("token");
-const fetchEmployees = async () => {
-  try {
-    setLoading(true);
-    const res = await fetch(
-      `${process.env.NEXT_PUBLIC_API_URL}/employees`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`, 
-          "Content-Type": "application/json",
-        },
+
+  useEffect(() => {
+    fetchEmployees();
+  }, []);
+
+  useEffect(() => {
+    let result = [...employees];
+
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      result = result.filter((emp) =>
+        ["full_name", "name", "email", "phone"].some((field) =>
+          String(emp[field] || "").toLowerCase().includes(term)
+        )
+      );
+    }
+
+
+    if (dateFilter.from || dateFilter.to) {
+      result = result.filter((emp) => {
+        if (!emp.startdate && !emp.enddate) return false;
+
+        const startDate = emp.startdate ? new Date(emp.startdate) : null;
+        const endDate = emp.enddate ? new Date(emp.enddate) : null;
+        const fromDate = dateFilter.from ? new Date(dateFilter.from) : null;
+        const toDate = dateFilter.to ? new Date(dateFilter.to) : null;
+
+        if (fromDate && toDate) {
+
+          if (startDate && endDate) {
+            return (
+              (startDate >= fromDate && startDate <= toDate) ||
+              (endDate >= fromDate && endDate <= toDate) ||
+              (startDate <= fromDate && endDate >= toDate)
+            );
+          } else if (startDate) {
+            return startDate >= fromDate && startDate <= toDate;
+          } else if (endDate) {
+            return endDate >= fromDate && endDate <= toDate;
+          }
+        } else if (fromDate) {
+
+          if (startDate && endDate) {
+            return endDate >= fromDate;
+          } else if (startDate) {
+            return startDate >= fromDate;
+          } else if (endDate) {
+            return endDate >= fromDate;
+          }
+        } else if (toDate) {
+
+          if (startDate && endDate) {
+            return startDate <= toDate;
+          } else if (startDate) {
+            return startDate <= toDate;
+          } else if (endDate) {
+            return endDate <= toDate;
+          }
+        }
+        return true;
+      });
+    }
+
+    setFilteredEmployees(result);
+  }, [searchTerm, employees, dateFilter]);
+
+
+  const validateForm = (data: EmployeeFormData) => {
+    const newErrors: Record<string, string> = {};
+
+    if (!data.name.trim()) {
+      newErrors.name = "Name is required";
+    }
+
+    if (!data.email.trim()) {
+      newErrors.email = "Email is required";
+    } else if (!validateEmail(data.email)) {
+      newErrors.email = "Invalid email format";
+    }
+
+    if (data.phone) {
+      if (!validatePhone(data.phone)) {
+        newErrors.phone = "Phone must be 10 digits";
       }
-    );
+    }
 
-    if (!res.ok) throw new Error("Failed to fetch employees");
+    if (data.aadhaar) {
+      if (!validateAadhaar(data.aadhaar)) {
+        newErrors.aadhaar = "Aadhaar must be 12 digits";
+      }
+    }
 
-    const rawData = await res.json();
-    const mappedData = rawData.map((emp: any) => ({
-      ...emp,
-      full_name: emp.name,
-    }));
+    setFormErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
 
-    setEmployees(mappedData);
-    setFilteredEmployees(mappedData);
-  } catch (e: any) {
-    setError(e.message);
-  } finally {
-    setLoading(false);
+  const handleRowUpdated = async (updatedRow: any) => {
+    try {
+      const formattedName = toInitCap(
+        updatedRow.full_name || updatedRow.name || ""
+      );
+
+      const payload = {
+        name: formattedName,
+        email: updatedRow.email ?? null,
+        phone: updatedRow.phone ? parsePhoneNumber(updatedRow.phone) : null,
+        address: updatedRow.address ?? null,
+        dob: updatedRow.dob ?? null,
+        enddate: updatedRow.enddate ?? null,
+        instructor:
+          updatedRow.instructor !== undefined
+            ? Number(updatedRow.instructor)
+            : null,
+        status:
+          updatedRow.status !== undefined ? Number(updatedRow.status) : 1,
+        notes: updatedRow.notes ?? null,
+        state: updatedRow.state ?? null,
+        aadhaar: updatedRow.aadhaar
+          ? updatedRow.aadhaar.replace(/\D/g, "")
+          : null,
+      };
+
+      await apiFetch(`/api/employees/${updatedRow.id}`, {
+        method: "PUT",
+        body: payload,
+      });
+
+      const updatedList = employees.map((emp) =>
+        emp.id === updatedRow.id
+          ? {
+            ...emp,
+            ...payload,
+            full_name: formattedName,
+            phone: payload.phone
+              ? formatPhoneNumber(payload.phone)
+              : "",
+          }
+          : emp
+      );
+
+      setEmployees(updatedList);
+      setFilteredEmployees(updatedList);
+      toast.success("Employee updated successfully");
+    } catch (err: any) {
+      console.error("Failed to update employee:", err);
+      setError(err.message || "Failed to update employee");
+    }
+  };
+
+
+const handleRowAdded = async (newRow: any) => {
+  try {
+    const formattedName = toInitCap(newRow.full_name || newRow.name || "");
+
+    const payload = {
+      name: formattedName,
+      email: newRow.email ?? null,
+      phone: newRow.phone ? parsePhoneNumber(newRow.phone) : null,
+      address: newRow.address ?? null,
+      dob: newRow.dob ?? null,
+      startdate: newRow.startdate ?? null,
+      enddate: newRow.enddate ?? null,
+      instructor:
+        newRow.instructor !== undefined ? Number(newRow.instructor) : null,
+      status:
+        newRow.status !== undefined ? Number(newRow.status) : 1,
+      notes: newRow.notes ?? null,
+      state: newRow.state ?? null,
+      aadhaar: newRow.aadhaar
+        ? newRow.aadhaar.replace(/\D/g, "")
+        : null,
+    };
+
+    const created = await apiFetch("/api/employees", {
+      method: "POST",
+      body: payload,
+    });
+
+    const newEmployee = {
+      ...created,
+      full_name: formattedName,
+      phone: created.phone ? formatPhoneNumber(created.phone) : "",
+    };
+
+    setEmployees((prev) => [newEmployee, ...prev]);
+    setFilteredEmployees((prev) => [newEmployee, ...prev]);
+
+    toast.success("Employee created successfully");
+
+  } catch (err: any) {
+    console.error("Failed to add employee:", err);
+
+
+    if (err?.status === 409) {
+      toast.error("Employee with this email already exists");
+    } else {
+      toast.error("Failed to create employee");
+    }
   }
 };
 
 
-  useEffect(() => {
-    fetchEmployees();
-    setIsLoading(true)
-  }, []);
 
-  useEffect(() => {
-    if (!searchTerm.trim()) {
-      setFilteredEmployees(employees);
-    } else {
-      const term = searchTerm.toLowerCase();
-      const filtered = employees.filter((emp) =>
-        ["name", "email", "phone"].some((field) =>
-          String(emp[field] || "").toLowerCase().includes(term)
-        )
-      );
-      setFilteredEmployees(filtered);
-    }
-  }, [searchTerm, employees]);
-
-  const handleRowUpdated = async (updatedRow: any) => {
-    try {
-      const payload = {
-        id: updatedRow.id,
-        name: updatedRow.full_name || updatedRow.name || "",
-        email: updatedRow.email,
-        phone: updatedRow.phone,
-        address: updatedRow.address,
-        dob: updatedRow.dob,
-        startdate: updatedRow.startdate,
-        enddate: updatedRow.lastmoddate || updatedRow.enddate,
-        instructor: updatedRow.instructor,
-        notes: updatedRow.notes,
-        state: updatedRow.state,
-        aadhaar: updatedRow.aadhaar,
-        status: updatedRow.status,
-      };
-      console.log("Sending payload:", payload);
-      await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/employees/${updatedRow.id}`,
-        payload
-      );
-      setFilteredEmployees((prevEmployees) =>
-        prevEmployees.map((employee) =>
-          employee.id === updatedRow.id ? { ...employee, ...updatedRow } : employee
-        )
-      );
-    } catch (error) {
-      console.error("Failed to update employee:", error);
-      setError("Failed to update employee");
-    }
-  };
 
   const handleRowDeleted = async (id: number | string) => {
     try {
-      await axios.delete(`${process.env.NEXT_PUBLIC_API_URL}/employees/${id}`);
+      await apiFetch(`/api/employees/${id}`, { method: "DELETE" });
+
+      setEmployees((prev) => prev.filter((row) => row.id !== id));
       setFilteredEmployees((prev) => prev.filter((row) => row.id !== id));
-    } catch (error) {
-      console.error("Failed to delete employee:", error);
+      toast.success("Employee deleted successfully");
+    } catch (err) {
+      console.error("Failed to delete employee:", err);
       setError("Failed to delete employee");
     }
   };
 
-  const handleOpenEmployeeForm = () => {
-    setShowEmployeeForm(true);
-  };
+const handleFormSubmit = async (data: EmployeeFormData) => {
+  if (!validateForm(data)) return;
 
-  const handleCloseEmployeeForm = () => {
+  setFormSaveLoading(true);
+
+  try {
+    const formattedName = toInitCap(data.name);
+
+    const payload = {
+      ...data,
+      name: formattedName,
+      phone: data.phone ? parsePhoneNumber(data.phone) : null,
+      aadhaar: data.aadhaar ? data.aadhaar.replace(/\D/g, "") : null,
+    };
+
+    const created = await apiFetch("/api/employees", {
+      method: "POST",
+      body: payload,
+    });
+
+    const newEmployee = {
+      ...created,
+      full_name: formattedName,
+      phone: created.phone ? formatPhoneNumber(created.phone) : "",
+    };
+
+    setEmployees((prev) => [newEmployee, ...prev]);
+    setFilteredEmployees((prev) => [newEmployee, ...prev]);
+
+    toast.success("Employee created successfully");
+    reset();
     setShowEmployeeForm(false);
-  };
+    setFormErrors({});
 
-  const handleFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-     // Validation for "Full Name" field
-  if (name === "name") {
-    const regex = /^[A-Za-z. ]*$/; 
-    if (!regex.test(value)) {
-      return; 
+  } catch (err: any) {
+    console.error("Failed to add employee:", err);
+
+    if (err?.status === 409) {
+      toast.error("Employee with this email already exists");
+      setFormErrors({ email: "Email already exists" });
+    } else {
+      toast.error("Failed to create employee");
     }
+  } finally {
+    setFormSaveLoading(false);
   }
-  // Validation for "Full Name"
-  if (name === "name") {
-    const regex = /^[A-Za-z. ]*$/; 
-    if (!regex.test(value)) return;
-  }
+};
 
-  // Validation for "Phone"
-  if (name === "phone" || name === "aadhaar") {
-    const regex = /^[0-9]*$/; 
-    if (!regex.test(value)) return;
-  }
-  // Validation for "Address"
-  if (name === "address") {
-    const regex = /^[A-Za-z0-9, ]*$/; 
-    if (!regex.test(value)) return;
-  }
-   // Validation for "State"
-  if (name === "state") {
-    const regex = /^[A-Za-z ]*$/; 
-    if (!regex.test(value)) return;
-  }
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleFormSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setFormSaveLoading(true);
-    try {
-      const payload = {
-        name: formData.name,
-        email: formData.email,
-        phone: formData.phone || null,
-        address: formData.address || null,
-        state: formData.state || null,
-        dob: formData.dob || null,
-        startdate: formData.startdate || null,
-        enddate: formData.enddate || null,
-        notes: formData.notes || null,
-        status: formData.status || null,
-        instructor: formData.instructor || null,
-        aadhaar: formData.aadhaar || null,
-      };
-      console.log("Sending payload:", payload);
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/employees`,
-        payload
-      );
-      const newEmployee = {
-        ...response.data,
-        full_name: response.data.name,
-        startdate: response.data.startdate,
-        lastmoddate: response.data.enddate,
-      };
-      setFilteredEmployees((prev) => [newEmployee, ...prev]);
-      handleCloseEmployeeForm();
-      setFormData(blankEmployeeData);
-    } catch (error) {
-      console.error("Failed to add employee:", error);
-      setError("Failed to add employee");
-    } finally {
-      setFormSaveLoading(false);
-    }
-  };
 
   const columnDefs: ColDef[] = [
     { headerName: "ID", field: "id", width: 80, pinned: "left" },
@@ -238,24 +446,25 @@ const fetchEmployees = async () => {
       headerName: "Full Name",
       field: "full_name",
       editable: true,
-      onCellValueChanged: (params) => handleRowUpdated(params.data),
+      onCellValueChanged: (params) => {
+        params.data.full_name = toInitCap(params.newValue || "");
+        handleRowUpdated(params.data);
+      },
     },
     {
       field: "phone",
       headerName: "Phone",
       width: 150,
       editable: true,
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
-          <a
-            href={`tel:${params.value}`}
-            className="text-blue-600 underline hover:text-blue-800"
-          >
+      cellRenderer: (params: any) =>
+        params.value ? (
+          <a href={`tel:${parsePhoneNumber(params.value)}`} className="text-blue-600 underline hover:text-blue-800">
             {params.value}
           </a>
-        );
-      },
+        ) : (
+          ""
+        ),
+      valueParser: (params) => formatPhoneNumber(params.newValue),
       onCellValueChanged: (params) => handleRowUpdated(params.data),
     },
     {
@@ -263,38 +472,39 @@ const fetchEmployees = async () => {
       headerName: "Email",
       width: 200,
       editable: true,
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
+      cellRenderer: (params: any) =>
+        params.value ? (
           <a
             href={`mailto:${params.value}`}
             className="text-blue-600 underline hover:text-blue-800"
-            onClick={(event) => event.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             {params.value}
           </a>
-        );
-      },
+        ) : (
+          ""
+        ),
       onCellValueChanged: (params) => handleRowUpdated(params.data),
     },
-    {
-      headerName: "Address",
-      field: "address",
-      editable: true,
-      onCellValueChanged: (params) => handleRowUpdated(params.data),
-    },
-    {
-      headerName: "State",
-      field: "state",
-      editable: true,
-      onCellValueChanged: (params) => handleRowUpdated(params.data),
-    },
+    { headerName: "Address", field: "address", editable: true, onCellValueChanged: (params) => handleRowUpdated(params.data) },
+    { headerName: "State", field: "state", editable: true, onCellValueChanged: (params) => handleRowUpdated(params.data) },
     {
       headerName: "DOB",
       field: "dob",
       valueFormatter: DateFormatter,
       editable: true,
       onCellValueChanged: (params) => handleRowUpdated(params.data),
+      filter: 'agDateColumnFilter',
+      filterParams: {
+        comparator: (filterLocalDateAtMidnight: Date, cellValue: string) => {
+          if (!cellValue) return -1;
+          const cellDate = new Date(cellValue);
+          if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
+            return 0;
+          }
+          return cellDate < filterLocalDateAtMidnight ? -1 : 1;
+        },
+      },
     },
     {
       headerName: "Start Date",
@@ -302,6 +512,17 @@ const fetchEmployees = async () => {
       valueFormatter: DateFormatter,
       editable: true,
       onCellValueChanged: (params) => handleRowUpdated(params.data),
+      filter: 'agDateColumnFilter',
+      filterParams: {
+        comparator: (filterLocalDateAtMidnight: Date, cellValue: string) => {
+          if (!cellValue) return -1;
+          const cellDate = new Date(cellValue);
+          if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
+            return 0;
+          }
+          return cellDate < filterLocalDateAtMidnight ? -1 : 1;
+        },
+      },
     },
     {
       headerName: "End Date",
@@ -309,205 +530,262 @@ const fetchEmployees = async () => {
       valueFormatter: DateFormatter,
       editable: true,
       onCellValueChanged: (params) => handleRowUpdated(params.data),
+      filter: 'agDateColumnFilter',
+      filterParams: {
+        comparator: (filterLocalDateAtMidnight: Date, cellValue: string) => {
+          if (!cellValue) return -1;
+          const cellDate = new Date(cellValue);
+          if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
+            return 0;
+          }
+          return cellDate < filterLocalDateAtMidnight ? -1 : 1;
+        },
+      },
     },
     {
       headerName: "Instructor",
       field: "instructor",
-      editable: true,
-      onCellValueChanged: (params) => handleRowUpdated(params.data),
+
+      cellRenderer: (p) => (Number(p.value) === 1 ? "Yes" : "No"),
+
+     
+      filterValueGetter: (p) =>
+        Number(p.data.instructor) === 1 ? "Yes" : "No",
+
+      filter: "agTextColumnFilter",
+
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: {
+        values: [1, 0],
+      },
+
+      valueFormatter: (p) => (Number(p.value) === 1 ? "Yes" : "No"),
     },
+
+
+
     {
       headerName: "Status",
       field: "status",
-      editable: true,
-      onCellValueChanged: (params) => handleRowUpdated(params.data),
-    },
-        {
-            field: "notes",
-            headerName: "Notes",
-            width: 300,
-            sortable: true,
-            cellRenderer: (params: any) => {
-              if (!params.value) return "";
-              return (
-                <div
-                  className="prose prose-sm max-w-none dark:prose-invert"
-                  dangerouslySetInnerHTML={{ __html: params.value }}
-                />
-              );
-            },
-          },
+
+      cellRenderer: StatusRenderer,
+
+     
+      filterValueGetter: (p) =>
+        Number(p.data.status) === 1 ? "Active" : "Inactive",
+
+      filter: "agTextColumnFilter",
+
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: {
+        values: [1, 0],
+      },
+
+      valueFormatter: (p) =>
+        Number(p.value) === 1 ? "Active" : "Inactive",
+    }
+
+    ,
     {
-      headerName: "Aadhar Number",
+      field: "notes",
+      headerName: "Notes",
+      width: 300,
+      sortable: true,
+      cellRenderer: (params: any) =>
+        params.value ? (
+          <div className="prose prose-sm dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: params.value }} />
+        ) : (
+          ""
+        ),
+    },
+    {
+      headerName: "Aadhaar Number",
       field: "aadhaar",
       editable: true,
+      valueParser: (params) => parsePhoneNumber(params.newValue),
+      cellRenderer: (params: any) =>
+        params.value ? formatPhoneNumber(params.value) : "",
       onCellValueChanged: (params) => handleRowUpdated(params.data),
     },
   ];
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <Toaster position="top-center" richColors />
+
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Employee Management</h1>
-          <p className="text-gray-600">Browse, search, and manage employees.</p>
+          <h1 className="text-2xl font-bold text-gray-900">Employee Management</h1>
+
         </div>
-        <button
-          onClick={handleOpenEmployeeForm}
-          className="flex items-center px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-        >
-          <Plus className="mr-2 h-4 w-4" /> Add Employee
-        </button>
       </div>
 
-   
-      <div className="max-w-md">
-      
-        <div className="relative mt-1">
-          <SearchIcon className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
-          <Input
-            id="search"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by name, email, phone"
-            className="pl-10"
-          />
+
+      <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+
+        <div className="max-w-md flex-1">
+          <div className="relative mt-1">
+            <SearchIcon className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
+            <Input
+              id="search"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search by name, email, phone"
+              className="pl-10 w-full"
+            />
+          </div>
         </div>
-        {searchTerm && (
-          <p className="text-sm mt-1">{filteredEmployees.length} result(s) found</p>
-        )}
+
+
+
       </div>
 
-      
+
+
       {showEmployeeForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-          <div className="relative w-full max-w-2xl rounded-xl bg-white p-4 shadow-md">
-            <h2 className="mb-4 text-center text-xl font-semibold">New Employee Form</h2>
-            <form
-              onSubmit={handleFormSubmit}
-              className="grid grid-cols-1 gap-2 md:grid-cols-2"
-            >
-              {Object.entries({
-                name: { label: "Full Name", type: "text", required: true },
-                email: { label: "Email", type: "email", required: true },
-                phone: { label: "Phone", type: "tel" },
-                address: { label: "Address", type: "text" },
-                state: { label: "State", type: "text" },
-                dob: { label: "Date of Birth", type: "date" },
-                startdate: { label: "Start Date", type: "date" },
-                enddate: { label: "End Date", type: "date" },
-                aadhaar: { label: "Aadhaar Number", type: "text" },
-                notes: { label: "Notes (optional)", type: "textarea" },
-                status: {
-                  label: "Status",
-                  type: "select",
-                  options: [0, 1],
-                  required: true,
-                },
-                instructor: {
-                  label: "Instructor",
-                  type: "select",
-                  options: [0, 1],
-                  required: true,
-                },
-              }).map(([name, config]) => (
-                <div
-                  key={name}
-                  className={config.type === "textarea" ? "md:col-span-2" : ""}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg">
+            <h2 className="mb-4 text-xl font-bold">Add New Employee</h2>
+            <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Name*</label>
+                <input
+                  {...register("name", { required: "Name is required" })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+                {errors.name && <p className="mt-1 text-sm text-red-600">{errors.name.message}</p>}
+                {formErrors.name && <p className="mt-1 text-sm text-red-600">{formErrors.name}</p>}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Email*</label>
+                <input
+                  {...register("email", {
+                    required: "Email is required",
+                    validate: (value) => validateEmail(value) || "Invalid email format"
+                  })}
+                  type="email"
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+                {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>}
+                {formErrors.email && <p className="mt-1 text-sm text-red-600">{formErrors.email}</p>}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Phone</label>
+                <input
+                  {...register("phone", {
+                    validate: (value) => !value || validatePhone(parsePhoneNumber(value)) || "Phone must be 10 digits"
+                  })}
+                  placeholder="+91 XXXXX XXXXX"
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  onChange={(e) => {
+                    const formatted = formatPhoneNumber(e.target.value);
+                    setValue("phone", formatted);
+                  }}
+                />
+                {errors.phone && <p className="mt-1 text-sm text-red-600">{errors.phone.message}</p>}
+                {formErrors.phone && <p className="mt-1 text-sm text-red-600">{formErrors.phone}</p>}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Aadhaar</label>
+                <input
+                  {...register("aadhaar", {
+                    validate: (value) => !value || validateAadhaar(value) || "Aadhaar must be 12 digits"
+                  })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+                {errors.aadhaar && <p className="mt-1 text-sm text-red-600">{errors.aadhaar.message}</p>}
+                {formErrors.aadhaar && <p className="mt-1 text-sm text-red-600">{formErrors.aadhaar}</p>}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Address</label>
+                <textarea
+                  {...register("address")}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Date of Birth</label>
+                <input
+                  type="date"
+                  {...register("dob")}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Start Date</label>
+                <input
+                  type="date"
+                  {...register("startdate")}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">End Date</label>
+                <input
+                  type="date"
+                  {...register("enddate")}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Notes</label>
+                <textarea
+                  {...register("notes")}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEmployeeForm(false);
+                    reset();
+                    setFormErrors({});
+                  }}
+                  className="rounded px-4 py-2 text-gray-700 hover:bg-gray-100"
                 >
-                  <label
-                    htmlFor={name}
-                    className="mb-0.5 block text-xs font-medium text-gray-700"
-                  >
-                    {config.label}
-                  </label>
-                  {config.type === "select" ? (
-                    <select
-                      id={name}
-                      name={name}
-                      value={formData[name as keyof typeof formData]}
-                      onChange={handleFormChange}
-                      className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      required={config.required}
-                    >
-                      <option value="" disabled>
-                        Select {config.label}
-                      </option>
-                      {config.options.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  ) : config.type === "textarea" ? (
-                    <textarea
-                      id={name}
-                      name={name}
-                      value={formData[name as keyof typeof formData]}
-                      onChange={handleFormChange}
-                      rows={2}
-                      className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                  ) : (
-                    <input
-                      type={config.type}
-                      id={name}
-                      name={name}
-                      value={formData[name as keyof typeof formData]}
-                      onChange={handleFormChange}
-                      className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      required={config.required}
-                    />
-                  )}
-                </div>
-              ))}
-              <div className="md:col-span-2">
+                  Cancel
+                </button>
                 <button
                   type="submit"
                   disabled={formSaveLoading}
-                  className={`w-full rounded-md py-1.5 text-sm transition duration-200 ${
-                    formSaveLoading
-                      ? "cursor-not-allowed bg-gray-400"
-                      : "bg-green-600 text-white hover:bg-green-700"
-                  }`}
+                  className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 disabled:opacity-50"
                 >
                   {formSaveLoading ? "Saving..." : "Save"}
                 </button>
               </div>
             </form>
-            <button
-              onClick={handleCloseEmployeeForm}
-              className="absolute right-2 top-2 text-xl leading-none text-gray-500 hover:text-gray-700"
-              aria-label="Close"
-            >
-              &times;
-            </button>
           </div>
         </div>
       )}
 
-      
+      {/* Table */}
       {loading ? (
         <p className="text-gray-500">Loading employees...</p>
       ) : error ? (
         <p className="text-red-500">Error: {error}</p>
       ) : (
-        <>
-          <AGGridTable
-            rowData={filteredEmployees}
-            columnDefs={columnDefs}
-            onRowClicked={(event) => console.log("Row clicked:", event.data)}
-            // title="Employee"
-            height="70vh"
-            loading={loading}
-            onRowUpdated={handleRowUpdated}
-            onRowDeleted={handleRowDeleted}
-            showFilters={false}
-            showSearch={false}
-          />
-        </>
+        <AGGridTable
+          rowData={filteredEmployees}
+          columnDefs={columnDefs}
+          title={`Employees (${filteredEmployees.length})`}
+          height="70vh"
+          onRowAdded={handleRowAdded}
+          onRowUpdated={handleRowUpdated}
+          onRowDeleted={handleRowDeleted}
+          showFilters={false}
+          showSearch={false}
+        />
       )}
     </div>
   );
 }
-

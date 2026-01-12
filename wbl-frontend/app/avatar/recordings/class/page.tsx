@@ -1,5 +1,4 @@
 "use client";
-
 import "@/styles/admin.css";
 import "@/styles/App.css";
 import { AGGridTable } from "@/components/AGGridTable";
@@ -9,8 +8,8 @@ import { Label } from "@/components/admin_ui/label";
 import { SearchIcon, PlusIcon } from "lucide-react";
 import { ColDef } from "ag-grid-community";
 import { useMemo, useState, useEffect } from "react";
-import axios from "axios";
 import { toast, Toaster } from "sonner";
+import api, { smartUpdate } from "@/lib/api";
 
 export default function RecordingsPage() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -18,37 +17,31 @@ export default function RecordingsPage() {
   const [recordings, setRecordings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Debounce search
+  // Debounce search input
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearch(searchTerm);
     }, 500);
     return () => clearTimeout(handler);
   }, [searchTerm]);
- const token = localStorage.getItem("token"); // get token once
 
-  // Fetch recordings with token auth
+
   const fetchRecordings = async () => {
     try {
       setLoading(true);
-
-      const url = `${process.env.NEXT_PUBLIC_API_URL}/recordings`;
-      const params: Record<string, string> = {};
-      if (debouncedSearch.trim()) {
-        params["search"] = debouncedSearch.trim();
+      const params = debouncedSearch.trim() ? { search: debouncedSearch.trim() } : {};
+      const queryString = new URLSearchParams(params).toString();
+      const endpoint = `/recordings${queryString ? `?${queryString}` : ""}`;
+      const { data } = await api.get(endpoint);
+      const recordingsData = Array.isArray(data) ? data : data?.data ?? [];
+      setRecordings(recordingsData);
+    } catch (err) {
+      console.error("Failed to fetch recordings:", err);
+      if (err.status === 401) {
+        toast.error("Not authorized — please login again.");
+      } else {
+        toast.error(err.message || "Failed to fetch recordings.");
       }
-
-      const res = await axios.get(url, {
-        headers: {
-          Authorization: `Bearer ${token}`, // pass token
-        },
-        params, // query parameters
-      });
-
-      setRecordings(res.data || []);
-    } catch (err: any) {
-      console.error(err);
-      toast.error(err.response?.data?.message || "Failed to fetch recordings.");
       setRecordings([]);
     } finally {
       setLoading(false);
@@ -57,97 +50,127 @@ export default function RecordingsPage() {
 
   useEffect(() => {
     fetchRecordings();
-  }, [debouncedSearch, token]);
+  }, [debouncedSearch]);
 
-  // Column definitions
-  const columnDefs: ColDef[] = useMemo<ColDef[]>(() => [
-    { field: "id", headerName: "ID", width: 90, pinned: "left" },
-    { field: "batchname", headerName: "Batch Name", width: 200, editable: true },
-    { field: "description", headerName: "Description", width: 300, editable: true },
-    { field: "type", headerName: "Type", width: 140, editable: true, cellEditor: "agTextCellEditor"},
-    { field: "subject", headerName: "Subject", width: 180, editable: true },
-    { field: "filename", headerName: "File Name", width: 180, editable: true },
-    {
-      field: "link",
-      headerName: "Link",
-      width: 250,
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
-          <a
-            href={params.value}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 underline hover:text-blue-800"
-          >
-            Link
-          </a>
-        );
+  const columnDefs: ColDef[] = useMemo<ColDef[]>(
+    () => [
+      { field: "id", headerName: "ID", width: 90, pinned: "left" },
+      { field: "description", headerName: "Description", width: 300, editable: true },
+      { field: "type", headerName: "Type", width: 120, editable: true, cellEditor: "agTextCellEditor" },
+      { field: "subject", headerName: "Subject", width: 140, editable: true },
+      { field: "filename", headerName: "File Name", width: 200, editable: true },
+      {
+        field: "link",
+        headerName: "Link",
+        width: 150,
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <a
+              href={params.value}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 underline hover:text-blue-800"
+              onClick={(e) => e.stopPropagation()}
+            >
+              Open
+            </a>
+          );
+        },
       },
-    },
-    { field: "videoid", headerName: "Video ID", width: 160, editable: true },
-    {
-      field: "classdate",
-      headerName: "Class Date",
-      width: 180,
-      valueFormatter: (params) =>
-        params.value ? new Date(params.value).toLocaleDateString() : ""
-    },
-  ], []);
+        {
+        field: "backup_url",
+        headerName: "Backup Url",
+        width: 150,
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <a
+              href={params.value}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 underline hover:text-blue-800"
+              onClick={(e) => e.stopPropagation()}
+            >
+              Open
+            </a>
+          );
+        },
+      },
+      { field: "videoid", headerName: "Video ID", width: 160, editable: true },
 
-  // PUT request on row update
+      {
+        field: "classdate",
+        headerName: "Class Date",
+        width: 180,
+        sortable: true,
+        filter: "agDateColumnFilter",
+        valueGetter: (params) => {
+          return params.data?.entry_date ? new Date(params.data.entry_date) : null;
+        },
+        valueFormatter: (params) => {
+          const value = params.value;
+          if (!value) return "-";
+          return value.toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          });
+        },
+      }
+    ],
+    []
+  );
+
   const handleRowUpdated = async (updatedRow: any) => {
     try {
-      await axios.put(`${process.env.NEXT_PUBLIC_API_URL}/recordings/${updatedRow.id}`, updatedRow);
-
-      setRecordings((prev) =>
-        prev.map((row) => (row.id === updatedRow.id ? updatedRow : row))
-      );
-
+      const updatedRecording = await smartUpdate("recordings", updatedRow.id, updatedRow);
+      setRecordings((prev) => prev.map((r) => (r.id === updatedRow.id ? updatedRecording : r)));
       toast.success("Recording updated successfully.");
-    } catch (err: any) {
+    } catch (err) {
       console.error("Failed to update recording:", err);
-      toast.error("Failed to update recording.");
+      if (err.status === 401) {
+        toast.error("Not authorized — please login again.");
+      } else {
+        toast.error(err.message || "Failed to update recording.");
+      }
     }
   };
 
-  // DELETE request on row deletion
+
   const handleRowDeleted = async (id: number | string) => {
     try {
-      await axios.delete(`${process.env.NEXT_PUBLIC_API_URL}/recordings/${id}`);
-
-      setRecordings((prev) => prev.filter((row) => row.id !== id));
+      await api.delete(`/recordings/${id}`);
+      setRecordings((prev) => prev.filter((r) => r.id !== id));
       toast.success(`Recording ${id} deleted.`);
-    } catch (err: any) {
+    } catch (err) {
       console.error("Failed to delete recording:", err);
-      toast.error("Failed to delete recording.");
+      if (err.status === 401) {
+        toast.error("Not authorized — please login again.");
+      } else {
+        toast.error(err.message || "Failed to delete recording.");
+      }
     }
   };
 
   return (
     <div className="space-y-6">
       <Toaster position="top-center" richColors />
-
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Class Recordings
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            Manage class recordings
-          </p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Class Recordings</h1>
+          <p className="text-gray-600 dark:text-gray-400">Manage class recordings</p>
         </div>
         <Button className="bg-whitebox-600 hover:bg-whitebox-700 text-white">
           <PlusIcon className="h-4 w-4 mr-2" />
           Add Recording
         </Button>
       </div>
-
       {/* Search Input */}
       <div className="max-w-md">
         <Label htmlFor="search" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          Search by ID or Batch Name or Title
+          Search by ID or Title
         </Label>
         <div className="relative mt-1">
           <SearchIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -155,14 +178,13 @@ export default function RecordingsPage() {
             id="search"
             type="text"
             value={searchTerm}
-            placeholder="Type ID or Batch Name..."
+            placeholder="Type ID or Title..."
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
           />
         </div>
       </div>
-
-      {/* AG Grid Table */}
+      {/* Table */}
       {loading ? (
         <p className="text-center mt-8">Loading...</p>
       ) : recordings.length === 0 ? (
@@ -181,5 +203,3 @@ export default function RecordingsPage() {
     </div>
   );
 }
-
-

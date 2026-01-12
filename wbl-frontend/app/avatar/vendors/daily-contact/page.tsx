@@ -1,19 +1,27 @@
+
 "use client";
-import React, { useEffect, useState, useMemo, useRef, useCallback } from "react";
+import React, {
+  useEffect,
+  useState,
+  useMemo,
+  useRef,
+  useCallback,
+} from "react";
+import api, { apiFetch, API_BASE_URL } from "@/lib/api";
 import "@/styles/admin.css";
 import "@/styles/App.css";
 import { Badge } from "@/components/admin_ui/badge";
 import { Input } from "@/components/admin_ui/input";
 import { Label } from "@/components/admin_ui/label";
 import { Button } from "@/components/admin_ui/button";
-import { SearchIcon, ChevronLeft, ChevronRight, UserPlus } from "lucide-react";
+import { SearchIcon, UserPlus, Trash2, ArrowRight } from "lucide-react";
 import { ColDef } from "ag-grid-community";
 import dynamic from "next/dynamic";
 import { toast, Toaster } from "sonner";
-import axios from "axios";
 
-
-const AGGridTable = dynamic(() => import("@/components/AGGridTable"), { ssr: false });
+const AGGridTable = dynamic(() => import("@/components/AGGridTable"), {
+  ssr: false,
+});
 
 const MovedToVendorRenderer = ({ value }: { value?: boolean }) => {
   const status = value ? "Yes" : "No";
@@ -27,15 +35,17 @@ const MovedToVendorRenderer = ({ value }: { value?: boolean }) => {
   return <Badge className={badgeClass}>{status}</Badge>;
 };
 
-const DateFormatter = ({ value }: { value?: string | Date | null }) =>
-  value ? new Date(value).toLocaleDateString() : "-";
+function formatDateFromDB(dateStr: string | null | undefined) {
+  if (!dateStr) return "";
+  return dateStr.slice(0, 10);
+}
 
 const EmailRenderer = ({ value }: { value?: string }) => {
   if (!value) return null;
   return (
     <a
       href={`mailto:${value}`}
-      className="text-blue-600 dark:text-blue-400 hover:underline"
+      className="text-blue-600 hover:underline dark:text-blue-400"
     >
       {value}
     </a>
@@ -47,7 +57,7 @@ const PhoneRenderer = ({ value }: { value?: string }) => {
   return (
     <a
       href={`tel:${value}`}
-      className="text-blue-600 dark:text-blue-400 hover:underline"
+      className="text-blue-600 hover:underline dark:text-blue-400"
     >
       {value}
     </a>
@@ -56,172 +66,332 @@ const PhoneRenderer = ({ value }: { value?: string }) => {
 
 export default function VendorContactsGrid() {
   const gridRef = useRef<any>(null);
+  const selectedRowsRef = useRef<any[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [contacts, setContacts] = useState<any[]>([]);
-  const [filteredContacts, setFilteredContacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [movingToVendor, setMovingToVendor] = useState(false); 
+  const [deleting, setDeleting] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<any[]>([]);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => { },
+  });
 
-  const apiEndpoint = useMemo(
-    () => `${process.env.NEXT_PUBLIC_API_URL}/vendor_contact_extracts`,
-    []
-  );
-
+  //  SIMPLIFIED: Single fetch function
   const fetchContacts = useCallback(async () => {
+    setLoading(true);
+
     try {
-      setLoading(true);
-      const token = localStorage.getItem("token");
+      // Try using the apiFetch utility first
+      if (typeof apiFetch === "function") {
+        const data = await apiFetch("/vendor_contact_extracts");
 
-        const res = await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/vendor_contact_extracts`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        );
+        // Normalize response
+        const contactsList = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.data)
+            ? data.data
+            : Array.isArray(data?.results)
+              ? data.results
+              : [];
 
-      const data = res.data || [];
-      setContacts(data);
-      setFilteredContacts(data);
+        setContacts(contactsList);
+        return;
+      }
+
+      // Fallback to api.get if available
+      if (api?.get) {
+        const response = await api.get("/vendor_contact_extracts");
+
+        const contactsList = Array.isArray(response?.data)
+          ? response.data
+          : Array.isArray(response?.data?.data)
+            ? response.data.data
+            : [];
+
+        setContacts(contactsList);
+        return;
+      }
+
+      // If no API utilities available, show error
+      toast.error("API client not configured properly");
     } catch (err: any) {
-      toast.error(err.message || "Failed to load contacts");
+      console.error("[fetchContacts] Error:", err);
+
+      // Handle authentication errors
+      if (err?.response?.status === 401 || err?.status === 401) {
+        toast.error("Session expired. Please log in again.");
+        // Optional: Redirect to login
+        // window.location.href = '/login';
+      } else {
+        toast.error(err?.message || "Failed to load contacts");
+      }
     } finally {
       setLoading(false);
     }
-  }, [apiEndpoint]);
+  }, []);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (!searchTerm.trim()) setFilteredContacts(contacts);
-      else {
-        const term = searchTerm.toLowerCase();
-        setFilteredContacts(
-          contacts.filter(
-            (c) =>
-              c.full_name?.toLowerCase().includes(term) ||
-              c.source_email?.toLowerCase().includes(term) ||
-              c.email?.toLowerCase().includes(term) ||
-              c.phone?.toLowerCase().includes(term) ||
-              c.linkedin_id?.toLowerCase().includes(term) ||
-              c.internal_linkedin_id?.toLowerCase().includes(term) || 
-              c.company_name?.toLowerCase().includes(term) ||
-              c.location?.toLowerCase().includes(term)
-          )
-        );
-      }
-    }, 300);
-    return () => clearTimeout(timer);
+  // Stable filtered data with useMemo (no state updates to prevent re-renders)
+  const filteredContacts = useMemo(() => {
+    if (!searchTerm.trim()) {
+      return contacts;
+    }
+    const term = searchTerm.toLowerCase();
+    return contacts.filter(
+      (c) =>
+        c.full_name?.toLowerCase().includes(term) ||
+        c.source_email?.toLowerCase().includes(term) ||
+        c.email?.toLowerCase().includes(term) ||
+        c.phone?.toLowerCase().includes(term) ||
+        c.linkedin_id?.toLowerCase().includes(term) ||
+        c.internal_linkedin_id?.toLowerCase().includes(term) ||
+        c.company_name?.toLowerCase().includes(term) ||
+        c.location?.toLowerCase().includes(term)
+    );
   }, [searchTerm, contacts]);
 
-  const handleRowUpdated = async (updatedData: any) => {
+  //  SIMPLIFIED: Update handler
+  const handleRowUpdated = useCallback(async (updatedData: any) => {
     try {
-      await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/vendor_contact/${updatedData.id}`,
-        updatedData
-      );
+      await apiFetch(`/vendor_contact/${updatedData.id}`, {
+        method: "PUT",
+        body: updatedData,
+      });
       toast.success("Contact updated successfully");
       fetchContacts();
     } catch (err: any) {
-      toast.error(err.message || "Failed to update contact");
+      console.error("Update error:", err);
+      toast.error(err?.message || "Failed to update contact");
     }
-  };
-
-  const handleRowDeleted = async (contactId: number | string) => {
-    try {
-      await axios.delete(
-        `${process.env.NEXT_PUBLIC_API_URL}/vendor_contact/${contactId}`
-      );
-      toast.success("Contact deleted successfully");
-      fetchContacts();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete contact");
-    }
-  };
-
-  const handleMoveAllToVendor = async () => {
-    try {
-      setMovingToVendor(true);
-      const token = localStorage.getItem("token");
-      
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/vendor_contact/move_to_vendor`,
-        { contact_ids: null },
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-
-      const result = response.data;
-      
-      if (result.inserted > 0) {
-        toast.success(`Moved ${result.inserted} contacts to vendor`);
-      }
-      
-      if (result.inserted === 0 && result.count === 0) {
-        toast.info("No contacts to move");
-      }
-      
-      await fetchContacts();
-      
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail || err.message || "Failed to move contacts to vendor");
-    } finally {
-      setMovingToVendor(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchContacts();
-    setIsLoading(true)
   }, [fetchContacts]);
 
-  const columnDefs: ColDef[] = useMemo<ColDef[]>(() => [
-    { field: "id", headerName: "ID", width: 100, pinned: "left" },
-    { field: "full_name", headerName: "Full Name", width: 180, editable: true },
-    {
-      field: "phone",
-      headerName: "Phone",
-      width: 150,
-      editable: true,
-      cellRenderer: PhoneRenderer,
-    },
-    {
-      field: "email",
-      headerName: "Email",
-      width: 200,
-      editable: true,
-      cellRenderer: EmailRenderer,
-    },
-    {
-      field: "extraction_date",
-      headerName: "Extraction Date",
-      width: 150,
-      valueFormatter: DateFormatter,
-      editable: true,
-    },
-    {
-      field: "moved_to_vendor",
-      headerName: "Moved To Vendor",
-      width: 150,
-      cellRenderer: MovedToVendorRenderer,
-    },
-    { field: "linkedin_id", headerName: "LinkedIn ID", width: 180, editable: true },
-    { field: "company_name", headerName: "Company Name", width: 200, editable: true },
-    { field: "source_email", headerName: "Source Email", width: 200, editable: true },
-    { field: "location", headerName: "Location", width: 150, editable: true },
-    {
-      field: "created_at",
-      headerName: "Created At",
-      width: 180,
-      valueFormatter: DateFormatter,
-    },
-    {
-      field: "internal_linkedin_id",
-      headerName: "Internal LinkedIn ID",
-      width: 200,
-      editable: true,
-    },
-  ], []);
+  const handleRowAdded = async (newContact: any) => {
+    try {
+
+      // Send POST request to create new vendor contact
+      const response = await apiFetch("/vendor_contact", {
+        method: "POST",
+        body: JSON.stringify(newContact),
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+
+      // Refresh the contacts list
+      fetchContacts();
+
+      toast.success("Vendor contact created successfully");
+    } catch (err: any) {
+      console.error("FAILED TO CREATE VENDOR CONTACT:", err);
+      toast.error(err?.message || "Failed to create vendor contact");
+    }
+  };
+
+  // Helper: Get only visible selected rows (after AG Grid column filters)
+  const getVisibleSelectedRows = useCallback(() => {
+    const currentSelectedRows = selectedRowsRef.current;
+    if (!currentSelectedRows || currentSelectedRows.length === 0) return [];
+    if (!gridRef.current?.api) return currentSelectedRows;
+
+    // Get IDs of visible rows after AG Grid filters
+    const visibleRowIds = new Set();
+    gridRef.current.api.forEachNodeAfterFilter((node: any) => {
+      if (node.data?.id) visibleRowIds.add(node.data.id);
+    });
+
+    // Return only selected rows that are visible
+    return currentSelectedRows.filter((row: any) => visibleRowIds.has(row.id));
+  }, []);
+
+  // FIXED: Properly defined handleRowDeleted function that works for single and multiple
+  const handleRowDeleted = useCallback(async (contactId: number | string) => {
+    // Get only visible selected rows (respects AG Grid column filters)
+    const visibleSelectedRows = getVisibleSelectedRows();
+    const deleteCount = visibleSelectedRows.length > 1 ? visibleSelectedRows.length : 1;
+
+    // Show confirmation with exact count
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Confirm Delete',
+      message: `Delete ${deleteCount} contact${deleteCount > 1 ? 's' : ''}?`,
+      onConfirm: async () => {
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+
+        if (visibleSelectedRows.length > 1) {
+          // Bulk delete - only visible rows
+          try {
+            const contactIds = visibleSelectedRows.map((row: any) => row.id);
+            const queryString = contactIds.map(id => `contact_ids=${id}`).join('&');
+
+            const result = await apiFetch(`/vendor_contact/bulk?${queryString}`, {
+              method: "DELETE",
+            });
+
+            toast.success(`Deleted ${visibleSelectedRows.length} contacts`);
+            setSelectedRows([]);
+            fetchContacts();
+          } catch (err: any) {
+            console.error("Bulk delete error:", err);
+            toast.error(err?.message || "Failed to delete contacts");
+          }
+        } else {
+          // Single delete
+          try {
+            await apiFetch(`/vendor_contact/${contactId}`, {
+              method: "DELETE",
+            });
+            toast.success("Deleted 1 contact");
+            fetchContacts();
+          } catch (err: any) {
+            console.error("Delete error:", err);
+            toast.error(err?.message || "Failed to delete contact");
+          }
+        }
+      },
+    });
+  }, [fetchContacts, getVisibleSelectedRows]);
+
+
+  // Move selected contacts to vendor
+  const handleMoveToVendor = useCallback(async () => {
+    // Get only visible selected rows (respects AG Grid column filters)
+    const visibleSelectedRows = getVisibleSelectedRows();
+
+    if (!visibleSelectedRows.length) {
+      toast.info("Please select contacts to move to vendor");
+      return;
+    }
+
+    // IMPORTANT: Only move contacts that are NOT already moved
+    const unmovedContacts = visibleSelectedRows.filter(
+      (row: any) => !row.moved_to_vendor || row.moved_to_vendor === 0 || row.moved_to_vendor === false
+    );
+
+    if (unmovedContacts.length === 0) {
+      toast.info("All selected contacts are already moved to vendor");
+      return;
+    }
+
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Move to Vendor',
+      message: `Are you sure you want to move ${unmovedContacts.length} selected contact${unmovedContacts.length > 1 ? 's' : ''} to vendor?`,
+      onConfirm: async () => {
+        setConfirmDialog({ ...confirmDialog, isOpen: false });
+        setDeleting(true);
+        try {
+          // Only get IDs from unmoved contacts (filtered selection)
+          const contactIds = unmovedContacts.map((row: any) => row.id);
+
+          // Use POST with request body instead of query string to avoid URL length limits
+          const result = await api.post(`/vendor_contact/move-to-vendor`, {
+            contact_ids: contactIds
+          });
+
+          toast.success(result.data?.message || `Successfully moved ${unmovedContacts.length} contact${unmovedContacts.length > 1 ? 's' : ''} to vendor`);
+          setSelectedRows([]);
+          await fetchContacts();
+        } catch (err: any) {
+          console.error("Move to vendor error:", err);
+          toast.error(err?.message || "Failed to move contacts to vendor");
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
+  }, [fetchContacts, getVisibleSelectedRows]);
+
+  // Initial fetch
+  useEffect(() => {
+    fetchContacts();
+  }, [fetchContacts]);
+
+  // Column definitions
+  const columnDefs: ColDef[] = useMemo<ColDef[]>(
+    () => [
+      { field: "id", headerName: "ID", width: 100, pinned: "left" },
+      {
+        field: "full_name",
+        headerName: "Full Name",
+        width: 180,
+        editable: true,
+      },
+      {
+        field: "phone",
+        headerName: "Phone",
+        width: 150,
+        editable: true,
+        cellRenderer: PhoneRenderer,
+      },
+      {
+        field: "email",
+        headerName: "Email",
+        width: 200,
+        editable: true,
+        cellRenderer: EmailRenderer,
+      },
+      {
+        field: "extraction_date",
+        headerName: "Extraction Date",
+        width: 150,
+        filter: "agDateColumnFilter",
+        valueFormatter: (params) => formatDateFromDB(params.value),
+        editable: true,
+      },
+      {
+        field: "moved_to_vendor",
+        headerName: "Moved To Vendor",
+        width: 150,
+        cellRenderer: MovedToVendorRenderer,
+      },
+      {
+        field: "linkedin_id",
+        headerName: "LinkedIn ID",
+        width: 180,
+        editable: true,
+      },
+      {
+        field: "company_name",
+        headerName: "Company Name",
+        width: 200,
+        editable: true,
+      },
+      {
+        field: "source_email",
+        headerName: "Source Email",
+        width: 200,
+        editable: true,
+      },
+      {
+        field: "location",
+        headerName: "Location",
+        width: 150,
+        editable: true,
+      },
+      {
+        field: "created_at",
+        headerName: "Created At",
+        width: 180,
+        filter: "agDateColumnFilter",
+        valueFormatter: (params) => formatDateFromDB(params.value),
+      },
+      {
+        field: "internal_linkedin_id",
+        headerName: "Internal LinkedIn ID",
+        width: 200,
+        editable: true,
+      },
+    ],
+    []
+  );
 
   const defaultColDef = useMemo(
     () => ({
@@ -234,54 +404,53 @@ export default function VendorContactsGrid() {
     []
   );
 
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-2">
       <Toaster position="top-center" richColors />
 
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Vendor Contact Extracts
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            {/* Browse, search, and manage all vendor contacts. */}
-          </p>
+      {/* Header Section */}
+      <div className="space-y-4">
+        {/* Title */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+              Daily Contact Extracts
+            </h1>
+          </div>
+
+          {/* Move to Vendor Button */}
+          <div>
+            <Button
+              onClick={handleMoveToVendor}
+              disabled={deleting}
+              className="bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              <ArrowRight className="mr-2 h-4 w-4" />
+              Move to Vendor
+            </Button>
+          </div>
         </div>
-        
-        <div>
-          <Button
-            onClick={handleMoveAllToVendor}
-            disabled={movingToVendor}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            <UserPlus className="h-4 w-4 mr-2" />
-            {movingToVendor ? "Moving..." : "Move All to Vendor"}
-          </Button>
+
+        {/* Search Box */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="w-full sm:max-w-md">
+            <div className="relative mt-1">
+              <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <Input
+                id="search"
+                type="text"
+                placeholder="Search by name, email, company..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="max-w-md">
-        <Label
-          htmlFor="search"
-          className="text-sm font-medium text-gray-700 dark:text-gray-300"
-        >
-          {/* Search Contacts */}
-        </Label>
-        <div className="relative mt-1">
-          <SearchIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-          <Input
-            id="search"
-            type="text"
-            placeholder="Search by name, email, company..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
-          />
-        </div>
-      </div>
-
-      <div className="flex justify-center w-full">
+      {/* Grid */}
+      <div className="flex w-full justify-center">
         <div className="w-full max-w-7xl">
           <AGGridTable
             rowData={filteredContacts}
@@ -289,14 +458,55 @@ export default function VendorContactsGrid() {
             defaultColDef={defaultColDef}
             loading={loading}
             height="600px"
-            title={`Vendor Contacts (${filteredContacts.length})`}
+            title={`Daily Contacts (${filteredContacts.length})`}
             showSearch={false}
+            onRowAdded={handleRowAdded}
             onRowUpdated={handleRowUpdated}
             onRowDeleted={handleRowDeleted}
+            skipDeleteConfirmation={true}
+            onFilterChanged={() => {
+              if (gridRef.current?.api) {
+                gridRef.current.api.deselectAll();
+              }
+              setSelectedRows([]);
+              selectedRowsRef.current = [];
+            }}
+            onSelectionChanged={(rows: any[]) => {
+              selectedRowsRef.current = rows;
+              setSelectedRows(rows);
+            }}
           />
         </div>
+
+        {/* Confirmation Dialog */}
+        {confirmDialog.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+            <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                {confirmDialog.title}
+              </h3>
+              <p className="text-gray-600 dark:text-gray-300 mb-6">
+                {confirmDialog.message}
+              </p>
+              <div className="flex justify-end gap-3">
+                <Button
+                  onClick={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
+                  className="bg-gray-200 text-gray-800 hover:bg-gray-300"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={confirmDialog.onConfirm}
+                  className="bg-red-600 text-white hover:bg-red-700"
+                >
+                  Proceed
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
 }
-

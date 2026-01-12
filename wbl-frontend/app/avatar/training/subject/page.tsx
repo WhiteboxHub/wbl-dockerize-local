@@ -1,5 +1,3 @@
-
-
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -7,18 +5,9 @@ import { ColDef } from "ag-grid-community";
 import { AGGridTable } from "@/components/AGGridTable";
 import { Input } from "@/components/admin_ui/input";
 import { Label } from "@/components/admin_ui/label";
-import { Button } from "@/components/admin_ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/admin_ui/dialog";
 import { SearchIcon } from "lucide-react";
-import axios from "axios";
 import { toast, Toaster } from "sonner";
-
+import { apiFetch } from "@/lib/api.js";
 
 
 export default function SubjectPage() {
@@ -28,34 +17,21 @@ export default function SubjectPage() {
   const [columnDefs, setColumnDefs] = useState<ColDef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newSubject, setNewSubject] = useState({
-    name: "",
-    description: "",
-  });
-
-  const token = localStorage.getItem("token");
 
   const fetchSubjects = async () => {
     try {
       setLoading(true);
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/subjects`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`, 
-          },
-        }
-      );
-
-      const sortedSubjects = res.data.sort((a: any, b: any) => b.id - a.id);
-
+      setError("");
+      const res = await apiFetch("/subjects");
+      const arr = Array.isArray(res) ? res : res?.data ?? [];
+      const sortedSubjects = (arr || []).slice().sort((a: any, b: any) => b.id - a.id);
       setSubjects(sortedSubjects);
       setFilteredSubjects(sortedSubjects);
       toast.success("Subjects loaded successfully.");
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message);
-      toast.error(e.response?.data?.detail || e.message);
+      const msg = e?.body || e?.message || "Failed to load subjects";
+      setError(typeof msg === "string" ? msg : JSON.stringify(msg));
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg));
     } finally {
       setLoading(false);
     }
@@ -68,19 +44,20 @@ export default function SubjectPage() {
   // Search filter
   useEffect(() => {
     const lower = searchTerm.trim().toLowerCase();
-    if (!lower) return setFilteredSubjects(subjects);
+    if (!lower) {
+      setFilteredSubjects(subjects);
+      return;
+    }
 
     const filtered = subjects.filter((row) => {
       const idMatch = row.id?.toString().includes(lower);
       const nameMatch = row.name?.toLowerCase().includes(lower);
       const descMatch = row.description?.toLowerCase().includes(lower);
-
       return idMatch || nameMatch || descMatch;
     });
 
     setFilteredSubjects(filtered);
   }, [searchTerm, subjects]);
-
 
   useEffect(() => {
     setColumnDefs([
@@ -93,47 +70,26 @@ export default function SubjectPage() {
   // Update
   const handleRowUpdated = async (updatedRow: any) => {
     try {
-      await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/subjects/${updatedRow.id}`,
-        updatedRow
-      );
-      setFilteredSubjects((prev) =>
-        prev.map((r) => (r.id === updatedRow.id ? updatedRow : r))
-      );
+      await apiFetch(`/subjects/${updatedRow.id}`, { method: "PUT", body: updatedRow });
+      setFilteredSubjects((prev) => prev.map((r) => (r.id === updatedRow.id ? updatedRow : r)));
+      setSubjects((prev) => prev.map((r) => (r.id === updatedRow.id ? updatedRow : r)));
       toast.success("Subject updated successfully.");
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message);
+      const msg = e?.body || e?.message || "Failed to update subject";
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
   };
 
   // Delete
   const handleRowDeleted = async (id: number) => {
     try {
-      await axios.delete(`${process.env.NEXT_PUBLIC_API_URL}/subjects/${id}`);
+      await apiFetch(`/subjects/${id}`, { method: "DELETE" });
       setFilteredSubjects((prev) => prev.filter((row) => row.id !== id));
+      setSubjects((prev) => prev.filter((row) => row.id !== id));
       toast.success(`Subject ${id} deleted.`);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message);
-    }
-  };
-
-  // Add
-  const handleAddSubject = async () => {
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/subjects`,
-        newSubject
-      );
-
-      const updated = [...subjects, res.data].sort((a, b) => b.id - a.id);
-
-      setSubjects(updated);
-      setFilteredSubjects(updated);
-      toast.success("New subject created.");
-      setIsModalOpen(false);
-      setNewSubject({ name: "", description: "" });
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message);
+      const msg = e?.body || e?.message || "Failed to delete subject";
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
   };
 
@@ -142,14 +98,13 @@ export default function SubjectPage() {
 
   return (
     <div className="space-y-6">
-      <Toaster position="top-center" richColors />
+      <Toaster position="top-center" />
 
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold">Subjects</h1>
           <p>Manage all subjects here.</p>
         </div>
-        <Button onClick={() => setIsModalOpen(true)}>+ Add Subject</Button>
       </div>
 
       {/* Search bar */}
@@ -172,52 +127,28 @@ export default function SubjectPage() {
         columnDefs={columnDefs}
         title={`Subjects (${filteredSubjects.length})`}
         height="calc(70vh)"
+        onRowAdded={async (newRow: any) => {
+          try {
+            const payload = {
+              name: newRow.name || newRow.subject_name || "",
+              description: newRow.description || newRow.desc || "",
+            };
+            if (!payload.name) { toast.error("Name is required"); return; }
+            const res = await apiFetch("/subjects", { method: "POST", body: payload });
+            const created = Array.isArray(res) ? res : (res?.data ?? res);
+            const updated = [created, ...subjects].slice().sort((a:any,b:any)=>b.id-a.id);
+            setSubjects(updated);
+            setFilteredSubjects(updated);
+            toast.success("Subject created");
+          } catch (e:any) {
+            const msg = e?.body || e?.message || "Failed to create subject";
+            toast.error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+          }
+        }}
         onRowUpdated={handleRowUpdated}
         onRowDeleted={handleRowDeleted}
         showSearch={false}
       />
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add New Subject</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                maxLength={100}
-                className="w-[400px]"
-                value={newSubject.name}
-                onChange={(e) =>
-                  setNewSubject((prev) => ({ ...prev, name: e.target.value }))
-                }
-              />
-            </div>
-            <div>
-              <Label htmlFor="description">Description</Label>
-              <Input
-                id="description"
-                maxLength={300}
-                className="w-full min-h-[120px] p-2 border rounded-md"
-                value={newSubject.description}
-                onChange={(e) =>
-                  setNewSubject((prev) => ({
-                    ...prev,
-                    description: e.target.value,
-                  }))
-                }
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddSubject}>Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

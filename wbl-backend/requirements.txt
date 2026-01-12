@@ -4,17 +4,14 @@ mysql-connector-python
 python-dotenv
 passlib
 python-jose
-pydantic
+# pydantic
 python-multipart
-fastapi_mail
-fastapi-mail
+# fastapi-mail
 PyJWT
-pydantic[email]
+# pydantic[email]
 slowapi
 email-validator
-pydantic
-PyJWT
-python-jose
 sqlalchemy
 pymysql
-cryptography
+pydantic==2.11.10
+fastapi-mail==1.5.0

@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -6,17 +5,9 @@ import { ColDef } from "ag-grid-community";
 import { AGGridTable } from "@/components/AGGridTable";
 import { Input } from "@/components/admin_ui/input";
 import { Label } from "@/components/admin_ui/label";
-import { Button } from "@/components/admin_ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/admin_ui/dialog";
 import { SearchIcon } from "lucide-react";
-import axios from "axios";
 import { toast, Toaster } from "sonner";
+import { apiFetch } from "@/lib/api.js";
 
 export default function CoursePage() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -24,13 +15,6 @@ export default function CoursePage() {
   const [filteredCourses, setFilteredCourses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newCourse, setNewCourse] = useState({
-    name: "",
-    alias: "",
-    description: "",
-    syllabus: "",
-  });
 
   const columnDefs: ColDef[] = [
     {
@@ -65,28 +49,22 @@ export default function CoursePage() {
       editable: true,
     },
   ];
-  const token = localStorage.getItem("token"); // get token once
 
+  // Fetch courses
   const fetchCourses = async () => {
     try {
       setLoading(true);
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/courses`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`, // pass token in headers
-          },
-        }
-      );
-
-      const sortedCourses = res.data.sort((a: any, b: any) => b.id - a.id);
-
+      setError("");
+      const res = await apiFetch("/courses");
+      const arr = Array.isArray(res) ? res : res?.data ?? [];
+      const sortedCourses = (arr || []).slice().sort((a: any, b: any) => b.id - a.id);
       setCourses(sortedCourses);
       setFilteredCourses(sortedCourses);
       toast.success("Fetched courses successfully.");
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message);
-      toast.error(e.response?.data?.detail || e.message);
+      const msg = e?.body || e?.message || "Failed to fetch courses";
+      setError(typeof msg === "string" ? msg : JSON.stringify(msg));
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg));
     } finally {
       setLoading(false);
     }
@@ -114,55 +92,39 @@ export default function CoursePage() {
     setFilteredCourses(filtered);
   }, [searchTerm, courses]);
 
-  // Update 
+  // Update
   const handleRowUpdated = async (updatedRow: any) => {
     try {
-      await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/courses/${updatedRow.id}`,
-        updatedRow
-      );
+      await apiFetch(`/courses/${updatedRow.id}`, {
+        method: "PUT",
+        body: updatedRow,
+      });
 
       const updated = courses
         .map((c) => (c.id === updatedRow.id ? updatedRow : c))
+        .slice()
         .sort((a, b) => b.id - a.id);
 
       setCourses(updated);
       setFilteredCourses(updated);
       toast.success("Row updated successfully.");
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message);
+      const msg = e?.body || e?.message || "Failed to update course";
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
   };
 
-  // Delete 
+  // Delete
   const handleRowDeleted = async (id: number) => {
     try {
-      await axios.delete(`${process.env.NEXT_PUBLIC_API_URL}/courses/${id}`);
+      await apiFetch(`/courses/${id}`, { method: "DELETE" });
       const updated = courses.filter((c) => c.id !== id);
       setCourses(updated);
       setFilteredCourses(updated);
       toast.success(`Course ${id} deleted.`);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message);
-    }
-  };
-
-  // Add course
-  const handleAddCourse = async () => {
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/courses`,
-        newCourse
-      );
-
-      const updated = [...courses, res.data].sort((a, b) => b.id - a.id);
-      setCourses(updated);
-      setFilteredCourses(updated);
-      toast.success("New course created.");
-      setIsModalOpen(false);
-      setNewCourse({ name: "", alias: "", description: "", syllabus: "" });
-    } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.message);
+      const msg = e?.body || e?.message || "Failed to delete course";
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
   };
 
@@ -171,14 +133,13 @@ export default function CoursePage() {
 
   return (
     <div className="space-y-6">
-      <Toaster position="top-center" richColors />
+      <Toaster position="top-center" />
 
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold">Courses</h1>
           <p>Manage all courses here.</p>
         </div>
-        <Button onClick={() => setIsModalOpen(true)}>+ Add Course</Button>
       </div>
 
       {/* Search bar */}
@@ -201,84 +162,30 @@ export default function CoursePage() {
         columnDefs={columnDefs}
         title={`Courses (${filteredCourses.length})`}
         height="calc(70vh)"
+        onRowAdded={async (newRow: any) => {
+          try {
+            const payload = {
+              name: newRow.name || "",
+              alias: newRow.alias || "",
+              description: newRow.description || "",
+              syllabus: newRow.syllabus || "",
+            };
+            if (!payload.name) { toast.error("Name is required"); return; }
+            const res = await apiFetch("/courses", { method: "POST", body: payload });
+            const created = Array.isArray(res) ? res : (res?.data ?? res);
+            const updated = [created, ...courses].slice().sort((a:any,b:any)=>b.id-a.id);
+            setCourses(updated);
+            setFilteredCourses(updated);
+            toast.success("Course created");
+          } catch (e:any) {
+            const msg = e?.body || e?.message || "Failed to create course";
+            toast.error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+          }
+        }}
         onRowUpdated={handleRowUpdated}
         onRowDeleted={handleRowDeleted}
         showSearch={false}
       />
-
-      {/* Add Course */}
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add New Course</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                value={newCourse.name}
-                onChange={(e) => {
-                  const regex = /^[A-Za-z]*$/;
-                  if (regex.test(e.target.value)) {
-                    setNewCourse((prev) => ({ ...prev, name: e.target.value }));
-                  }
-                }}
-              />
-            </div>
-            <div>
-              <Label htmlFor="alias">Alias</Label>
-              <Input
-                id="alias"
-                value={newCourse.alias}
-                onChange={(e) => {
-                  const regex = /^[A-Za-z]*$/;
-                  if (regex.test(e.target.value)) {
-                    setNewCourse((prev) => ({ ...prev, alias: e.target.value }));
-                  }
-                }}
-              />
-            </div>
-            <div>
-              <Label htmlFor="description">Description</Label>
-              <Input
-                id="description"
-                className="w-full min-h-[120px] p-2 border rounded-md"
-                value={newCourse.description}
-                onChange={(e) => {
-                  const regex = /^[^0-9]*$/;
-                  if (regex.test(e.target.value)) {
-                    setNewCourse((prev) => ({
-                      ...prev,
-                      description: e.target.value,
-                    }));
-                  }
-                }}
-              />
-            </div>
-            <div>
-              <Label htmlFor="syllabus">Syllabus</Label>
-              <Input
-                id="syllabus"
-                className="w-full min-h-[150px] p-2 border rounded-md"
-                value={newCourse.syllabus}
-                onChange={(e) => {
-                  const regex = /^[^0-9]*$/;
-                  if (regex.test(e.target.value)) {
-                    setNewCourse((prev) => ({ ...prev, syllabus: e.target.value }));
-                  }
-                }}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddCourse}>Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

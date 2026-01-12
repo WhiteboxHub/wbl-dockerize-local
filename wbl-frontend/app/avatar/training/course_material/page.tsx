@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useMemo, useEffect, useState } from "react";
@@ -7,143 +6,262 @@ import { AGGridTable } from "@/components/AGGridTable";
 import { Input } from "@/components/admin_ui/input";
 import { Label } from "@/components/admin_ui/label";
 import { SearchIcon } from "lucide-react";
-import axios from "axios";
-import { Button } from "@/components/admin_ui/button";
 import { toast, Toaster } from "sonner";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/admin_ui/dialog";
+import { apiFetch } from "@/lib/api.js";
+import { useForm } from "react-hook-form";
 
+interface CourseMaterial {
+  id: number;
+  subjectid: number;
+  courseid: number;
+  name: string;
+  description: string;
+  type: string;
+  link: string;
+  sortorder: number;
+}
+
+interface Course {
+  id: number;
+  name: string;
+}
+
+interface Subject {
+  id: number;
+  name: string;
+}
+
+interface MaterialFormData {
+  courseid: string;
+  subjectid: string;
+  type: string;
+  sortorder: string;
+  name: string;
+  link: string;
+  description: string;
+}
+
+const TYPE_MAPPING = {
+  P: "Presentations",
+  C: "Cheatsheets",
+  D: "Diagrams",
+  S: "Softwares",
+  I: "Installations",
+  B: "Books",
+  N: "Newsletters",
+  M: "Materials",
+  A: 'Assignments'
+};
+
+const TYPE_OPTIONS = [
+  { value: "P", label: "Presentations" },
+  { value: "C", label: "Cheatsheets" },
+  { value: "D", label: "Diagrams" },
+  { value: "S", label: "Softwares" },
+  { value: "I", label: "Installations" },
+  { value: "B", label: "Books" },
+  { value: "N", label: "Newsletters" },
+  { value: "M", label: "Materials" },
+  { value: "A", label: "Assignments" },
+];
 
 export default function CourseMaterialPage() {
   const [searchTerm, setSearchTerm] = useState("");
-  const [materials, setMaterials] = useState<any[]>([]);
-  const [filteredMaterials, setFilteredMaterials] = useState<any[]>([]);
+  const [materials, setMaterials] = useState<CourseMaterial[]>([]);
+  const [filteredMaterials, setFilteredMaterials] = useState<CourseMaterial[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [courses, setCourses] = useState<any[]>([]);
-  const [subjects, setSubjects] = useState<any[]>([]);
-  const [newMaterial, setNewMaterial] = useState({
-    subjectid: "0",
-    courseid: "",
-    name: "",
-    description: "",
-    type: "P",
-    link: "",
-    sortorder: "9999"
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+    setValue
+  } = useForm<MaterialFormData>({
+    defaultValues: {
+      subjectid: "0",
+      courseid: "",
+      type: "P",
+      sortorder: "9999",
+      name: "",
+      description: "",
+      link: ""
+    }
   });
 
-const fetchCourses = async () => {
-  try {
-    const token = localStorage.getItem("token"); 
-    const res = await axios.get(`${process.env.NEXT_PUBLIC_API_URL}/courses`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  const fetchCourses = async () => {
+    try {
+      const res = await apiFetch("/courses");
+      const arr = Array.isArray(res) ? res : res?.data ?? [];
+      const sortedCourses = (arr || []).slice().sort((a: any, b: any) => b.id - a.id);
+      setCourses(sortedCourses);
+    } catch (e: any) {
+    }
+  };
 
-    const sortedCourses = res.data.sort((a: any, b: any) => b.id - a.id);
-    setCourses(sortedCourses);
-  } catch (e: any) {
-    console.error("Failed to fetch courses", e);
-  }
-};
+  const fetchSubjects = async () => {
+    try {
+      const res = await apiFetch("/subjects");
+      const arr = Array.isArray(res) ? res : res?.data ?? [];
+      const sortedSubjects = (arr || []).slice().sort((a: any, b: any) => b.id - a.id);
+      setSubjects(sortedSubjects);
+    } catch (e: any) {
+    }
+  };
 
-const fetchSubjects = async () => {
-  try {
-    const token = localStorage.getItem("token");
-    const res = await axios.get(`${process.env.NEXT_PUBLIC_API_URL}/subjects`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    const sortedSubjects = res.data.sort((a: any, b: any) => b.id - a.id);
-    setSubjects(sortedSubjects);
-  } catch (e: any) {
-    console.error("Failed to fetch subjects", e);
-  }
-};
-
-const fetchMaterials = async () => {
-  try {
+  const fetchMaterials = async () => {
     setLoading(true);
-    const token = localStorage.getItem("token");
-    const res = await axios.get(
-      `${process.env.NEXT_PUBLIC_API_URL}/course-materials`,
-      {
-        headers: { Authorization: `Bearer ${token}` }, 
-      }
-    );
-
-    const sortedMaterials = res.data.sort((a: any, b: any) => b.id - a.id);
-
-    setMaterials(sortedMaterials);
-    setFilteredMaterials(sortedMaterials);
-
-    toast.success("Course Materials fetched successfully", {
-      position: "top-center",
-    });
-  } catch (e: any) {
-    setError(e.response?.data?.message || e.message);
-    toast.error("Failed to fetch Course Materials", { position: "top-center" });
-  } finally {
-    setLoading(false);
-  }
-};
-
-useEffect(() => {
-  fetchMaterials();
-  fetchCourses();
-  fetchSubjects();
-}, []);
-
-
-  const getOrphanCourseIds = () => {
-    const courseIdsFromMaterials = [...new Set(materials.map(m => m.courseid))];
-    return courseIdsFromMaterials.filter(id => 
-      !courses.some(course => course.id === id)
-    ).sort((a, b) => b - a); 
+    try {
+      setError("");
+      const res = await apiFetch("/course-materials");
+      const arr = Array.isArray(res) ? res : res?.data ?? [];
+      const sortedMaterials = (arr || []).slice().sort((a: any, b: any) => b.id - a.id);
+      setMaterials(sortedMaterials);
+      setFilteredMaterials(sortedMaterials);
+      toast.success("Course Materials fetched successfully", { position: "top-center" });
+    } catch (e: any) {
+      const msg = e?.body || e?.message || "Failed to fetch Course Materials";
+      setError(typeof msg === "string" ? msg : JSON.stringify(msg));
+      toast.error("Failed to fetch Course Materials", { position: "top-center" });
+    } finally {
+      setLoading(false);
+    }
   };
 
-
-  const getOrphanSubjectIds = () => {
-    const subjectIdsFromMaterials = [...new Set(materials.map(m => m.subjectid))];
-    return subjectIdsFromMaterials.filter(id => 
-      !subjects.some(subject => subject.id === id)
-    ).sort((a, b) => b - a); 
-  };
-
-  // search filter
   useEffect(() => {
-  const lower = searchTerm.trim().toLowerCase();
-  if (!lower) return setFilteredMaterials(materials);
+    fetchMaterials();
+    fetchCourses();
+    fetchSubjects();
+  }, []);
 
-  const filtered = materials.filter((row) => {
-    const idStr = row.id?.toString().toLowerCase() || "";
-    const nameStr = row.name?.toLowerCase() || "";
-    const typeStr = row.type?.toLowerCase() || "";
-    const courseIdStr = row.courseid?.toString().toLowerCase() || "";
-    const subjectIdStr = row.subjectid?.toString().toLowerCase() || "";
+  const getSubjectDisplayName = (subjectId: number) => {
+    if (subjectId === 0) return "Basic Fundamentals";
+    const subject = subjects.find((s) => s.id === subjectId);
+    return subject ? subject.name : `Subject ID: ${subjectId}`;
+  };
 
-    return (
-      idStr.includes(lower) ||
-      nameStr.includes(lower) ||
-      typeStr.includes(lower) ||
-      courseIdStr.includes(lower) ||
-      subjectIdStr.includes(lower)
-    );
-  });
+  const getCourseDisplayName = (courseId: number) => {
+    if (courseId === 0) return "Fundamentals";
+    const course = courses.find((c) => c.id === courseId);
+    return course ? course.name : `Course ID: ${courseId}`;
+  };
 
-  setFilteredMaterials(filtered);
-}, [searchTerm, materials]);
+  const getTypeDisplayName = (typeCode: string) => {
+    return TYPE_MAPPING[typeCode as keyof typeof TYPE_MAPPING] || typeCode;
+  };
 
+  // Search Filter
+  useEffect(() => {
+    const lower = searchTerm.trim().toLowerCase();
+    if (!lower) {
+      setFilteredMaterials(materials);
+      return;
+    }
 
-const columnDefs: ColDef[] = useMemo<ColDef[]>(() => [
-    { field: "id", headerName: "ID", width: 130, pinned: "left",editable: false },
-    { field: "subjectid", headerName: "Subject ID", width: 130, editable: true },
-    { field: "courseid", headerName: "Course ID", width: 130, editable: true },
-    { field: "name", headerName: "Name", width: 250, editable: true },
-    { field: "description", headerName: "Description", width: 230, editable: true },
-    { field: "type", headerName: "Type", width: 130, editable: true },
-    {field: "link",
+    const filtered = materials.filter((row) => {
+      const idStr = row.id?.toString().toLowerCase() || "";
+      const nameStr = row.name?.toLowerCase() || "";
+      const typeStr = getTypeDisplayName(row.type)?.toLowerCase() || "";
+      const courseNameStr = getCourseDisplayName(row.courseid)?.toLowerCase() || "";
+      const subjectNameStr = getSubjectDisplayName(row.subjectid)?.toLowerCase() || "";
+
+      return (
+        idStr.includes(lower) ||
+        nameStr.includes(lower) ||
+        typeStr.includes(lower) ||
+        courseNameStr.includes(lower) ||
+        subjectNameStr.includes(lower)
+      );
+    });
+
+    setFilteredMaterials(filtered);
+  }, [searchTerm, materials, subjects, courses]);
+
+  const columnDefs: ColDef[] = useMemo<ColDef[]>(() => [
+    { 
+      field: "id", 
+      headerName: "ID", 
+      width: 130, 
+      pinned: "left", 
+      editable: false 
+    },
+    {
+      field: "subjectid",
+      headerName: "Subject Name",
+      width: 180,
+      editable: true,
+      valueFormatter: (params) => {
+        return getSubjectDisplayName(params.value);
+      },
+      cellEditor: "agRichSelectCellEditor",
+      cellEditorParams: {
+        values: [
+          0,  
+          ...subjects.map(s => s.id) 
+        ],
+        formatValue: (value: number) => {
+          return getSubjectDisplayName(value);
+        }
+      },
+      cellEditorPopup: true,
+    },
+    {
+      field: "courseid",
+      headerName: "Course Name",
+      width: 180,
+      editable: true,
+      valueFormatter: (params) => {
+        return getCourseDisplayName(params.value);
+      },
+      cellEditor: "agRichSelectCellEditor",
+      cellEditorParams: {
+        values: [
+          0,  
+          ...courses.map(c => c.id)
+        ],
+        formatValue: (value: number) => {
+          return getCourseDisplayName(value);
+        }
+      },
+      cellEditorPopup: true,
+    },
+    { 
+      field: "name", 
+      headerName: "Material Name", 
+      width: 250, 
+      editable: true 
+    },
+    { 
+      field: "description", 
+      headerName: "Description", 
+      width: 230, 
+      editable: true 
+    },
+    {
+      field: "type",
+      headerName: "Type",
+      width: 150,
+      editable: true,
+      valueFormatter: (params) => {
+        return getTypeDisplayName(params.value);
+      },
+      cellEditor: "agRichSelectCellEditor",
+      cellEditorParams: {
+        values: Object.keys(TYPE_MAPPING), 
+        formatValue: (value: string) => {
+          return getTypeDisplayName(value);
+        }
+      },
+      cellEditorPopup: true,
+    },
+    {
+      field: "link",
       headerName: "Link",
       width: 130,
+      editable: true,
       cellRenderer: (params: any) => {
         if (!params.value) return "";
         return (
@@ -158,260 +276,126 @@ const columnDefs: ColDef[] = useMemo<ColDef[]>(() => [
         );
       },
     },
-    { field: "sortorder", headerName: "Sort Order", width: 140, editable: true },
-  ], []);
+    { 
+      field: "sortorder", 
+      headerName: "Sort Order", 
+      width: 140, 
+      editable: true,
+      valueParser: (params) => Number(params.newValue)
+    },
+  ], [subjects, courses]);
 
-  // Add new material
-const handleAddMaterial = async () => {
-
-  const payload = {
-    ...newMaterial,
-    subjectid: Number(newMaterial.subjectid) || 0,
-    courseid: Number(newMaterial.courseid) || 0,
-    sortorder: Number(newMaterial.sortorder) || 9999,
-  };
-
-  try {
-    const res = await axios.post(
-      `${process.env.NEXT_PUBLIC_API_URL}/course-materials`,
-      payload
-    );
-
-    const updated = [...materials, res.data].sort((a, b) => b.id - a.id);
-    setMaterials(updated);
-    setFilteredMaterials(updated);
-    toast.success("Course Material added successfully", { position: "top-center" });
-    setIsModalOpen(false);
-    setNewMaterial({
-      subjectid: "0",
-      courseid: "",
-      name: "",
-      description: "",
-      type: "P",
-      link: "",
-      sortorder: "9999"
-    });
-  } catch (e: any) {
-    toast.error(
-      e.response?.data?.message || "Failed to add Course Material",
-      { position: "top-center" }
-    );
-  }
-};
-
-  // update 
+  // Update material
   const handleRowUpdated = async (updatedRow: any) => {
     try {
-      await axios.put(`${process.env.NEXT_PUBLIC_API_URL}/course-materials/${updatedRow.id}`, updatedRow);
-      setFilteredMaterials(prev => prev.map(r => r.id === updatedRow.id ? updatedRow : r));
+      await apiFetch(`/course-materials/${updatedRow.id}`, { method: "PUT", body: updatedRow });
+      setMaterials((prev) => prev.map((r) => (r.id === updatedRow.id ? updatedRow : r)));
+      setFilteredMaterials((prev) => prev.map((r) => (r.id === updatedRow.id ? updatedRow : r)));
       toast.success("Course Material updated successfully", { position: "top-center" });
-    } catch (e) {
-      toast.error(e.response?.data?.message || "Failed to update Course Material", { position: "top-center" });
+    } catch (e: any) {
+      const msg = e?.body || e?.message || "Failed to update Course Material";
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg), { position: "top-center" });
     }
   };
 
-  // delete 
+  // Delete material
   const handleRowDeleted = async (id: number) => {
     try {
-      await axios.delete(`${process.env.NEXT_PUBLIC_API_URL}/course-materials/${id}`);
-      setFilteredMaterials(prev => prev.filter(r => r.id !== id));
+      await apiFetch(`/course-materials/${id}`, { method: "DELETE" });
+      setMaterials((prev) => prev.filter((r) => r.id !== id));
+      setFilteredMaterials((prev) => prev.filter((r) => r.id !== id));
       toast.success(`Course Material ${id} deleted`, { position: "top-center" });
-    } catch (e) {
-      toast.error(e.response?.data?.message || "Failed to delete Course Material", { position: "top-center" });
+    } catch (e: any) {
+      const msg = e?.body || e?.message || "Failed to delete Course Material";
+      toast.error(typeof msg === "string" ? msg : JSON.stringify(msg), { position: "top-center" });
     }
   };
 
-  if (loading) return <p className="text-center mt-8">Loading...</p>;
-  if (error) return <p className="text-center mt-8 text-red-600">{error}</p>;
+  if (loading) return <p className="mt-8 text-center">Loading...</p>;
+  if (error) return <p className="mt-8 text-center text-red-600">{error}</p>;
 
   return (
-      <div className="space-y-6">
+    <div className="space-y-6">
       <Toaster position="top-center" />
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold">Course Materials</h1>
-          <p>Manage course materials for courses and subjects.</p>
-        </div>
-        <Button onClick={() => setIsModalOpen(true)}>+ Add Course Material</Button>
-      </div>
-      {/* Search */}
-      <div className="max-w-md">
-        <Label htmlFor="search">Search</Label>
-        <div className="relative mt-1">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-          <Input
-            id="search"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by ID, name, type or ..."
-            className="pl-10"
-          />
-        </div>
-      </div>
-       {/* Add Material Modal */}
-      <Dialog open={isModalOpen} onOpenChange={(open) => {
-        setIsModalOpen(open);
-        if (!open) {
-          setNewMaterial({
-            subjectid: "0",
-            courseid: "",
-            name: "",
-            description: "",
-            type: "P",
-            link: "",
-            sortorder: "9999"
-          });
-        }
-      }}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Add New Course Material</DialogTitle>
-          </DialogHeader>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Course ID */}
-            <div className="space-y-2">
-              <Label htmlFor="courseid">Course ID*</Label>
-              {courses.length === 0 ? (
-                <p className="text-gray-500">Loading courses...</p>
-              ) : (
-                <select
-                  id="courseid"
-                  value={newMaterial.courseid}
-                  onChange={(e) =>
-                    setNewMaterial((prev) => ({ ...prev, courseid: e.target.value }))
-                  }
-                  className="w-full border border-gray-300 rounded px-2 py-1 max-h-48 overflow-y-auto"
-                >
-                  {courses.map((course) => (
-                    <option key={course.id} value={course.id}>
-                      {course.id}
-                    </option>
-                  ))}
-                  {getOrphanCourseIds().map((id) => (
-                    <option key={`orphan-${id}`} value={id}>
-                      {id} 
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
+      {/* Header + Search + Add Button (Responsive Layout) */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {/* Left Section */}
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Course Materials</h1>
+          <p className="text-gray-600 dark:text-gray-400">Manage course materials for courses and subjects.</p>
 
-            {/* Subject ID */}
-            <div className="space-y-2">
-              <Label htmlFor="subjectid">Subject ID</Label>
-              {subjects.length === 0 ? (
-                <p className="text-gray-500">Loading subjects...</p>
-              ) : (
-                <select
-                  id="subjectid"
-                  value={newMaterial.subjectid}
-                  onChange={(e) =>
-                    setNewMaterial((prev) => ({
-                      ...prev,
-                      subjectid: e.target.value,
-                    }))
-                  }
-                  className="w-full border border-gray-300 rounded px-2 py-1 max-h-48 overflow-y-auto"
-                >
-                  {subjects.map((subject) => (
-                    <option key={subject.id} value={subject.id}>
-                      {subject.id}
-                    </option>
-                  ))}
-                  {getOrphanSubjectIds().map((id) => (
-                    <option key={`orphan-${id}`} value={id}>
-                      {id} 
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-            <div className=" space-y-2">
-              <Label htmlFor="name">Name*</Label>
-              <Input
-                id="name"
-                value={newMaterial.name}
-                maxLength={250}
-                required
-                onChange={(e) =>
-                  setNewMaterial((prev) => ({ ...prev, name: e.target.value }))
-                }
+          {/* Search Input */}
+          <div className="mt-2 sm:mt-0 sm:max-w-md">
+            <Label htmlFor="search" className="text-sm font-medium text-gray-700 dark:text-gray-300">Search</Label>
+            <div className="relative mt-1">
+              <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <Input 
+                id="search" 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)} 
+                placeholder="Search by ID, name, type..." 
+                className="w-full pl-10 text-sm sm:text-base" 
               />
             </div>
-            <div className="md:col-span-2 space-y-2">
-              <Label htmlFor="description">Description</Label>
-              <Input
-                id="description"
-                value={newMaterial.description}
-                maxLength={500}
-                onChange={(e) =>
-                  setNewMaterial((prev) => ({
-                    ...prev,
-                    description: e.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="type">Type</Label>
-              <Input
-                id="type"
-                value={newMaterial.type}
-                onChange={(e) =>
-                  setNewMaterial((prev) => ({ ...prev, type: e.target.value }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="sortorder">Sort Order</Label>
-              <Input
-                id="sortorder"
-                type="number"
-                value={newMaterial.sortorder}
-                onChange={(e) =>
-                  setNewMaterial((prev) => ({
-                    ...prev,
-                    sortorder: e.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div className="md:col-span-2 space-y-2">
-              <Label htmlFor="link">Link</Label>
-              <Input
-                id="link"
-                value={newMaterial.link}
-                maxLength={500}
-                onChange={(e) =>
-                  setNewMaterial((prev) => ({ ...prev, link: e.target.value }))
-                }
-              />
-            </div>
+            {searchTerm && <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{filteredMaterials.length} results found</p>}
           </div>
+        </div>
+      </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddMaterial}>Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       <AGGridTable
         rowData={filteredMaterials}
         columnDefs={columnDefs}
-          defaultColDef={{
-    editable: true, // make all editable by default
-    flex: 1,
-    resizable: true,
-  }}
-    
+        defaultColDef={{
+          editable: true,
+          flex: 1,
+          resizable: true,
+        }}
         title={`Course Materials (${filteredMaterials.length})`}
-        height="calc(70vh)"
+        onRowAdded={async (newRow: any) => {
+          try {
+            // Accept either IDs or names coming from dynamic add form
+            let courseid = newRow.courseid || 0;
+            let subjectid = newRow.subjectid ?? 0;
+            const name = newRow.name || newRow.filename || "";
+            const type = newRow.type || newRow.material_type || "";
+            const description = newRow.description || "";
+            const link = newRow.link || "";
+            const sortorder = Number(newRow.sortorder || 9999);
+
+            // If names provided (from dynamic form), map names to IDs
+            const cmCourse = newRow.cm_course as string | undefined;
+            const cmSubject = newRow.cm_subject as string | undefined;
+            if (!courseid && cmCourse) {
+              const course = courses.find(c => c.name === cmCourse);
+              if (course) courseid = course.id;
+              if (cmCourse === 'Fundamentals') courseid = 0;
+            }
+            if (subjectid === undefined && cmSubject) {
+              const subject = subjects.find(s => s.name === cmSubject);
+              if (subject) subjectid = subject.id as any;
+              if (cmSubject === 'Basic Fundamentals') subjectid = 0 as any;
+            }
+
+            if (!courseid || !name || !type) {
+              toast.error("Course, Material Name and Type are required");
+              return;
+            }
+
+            const payload = { courseid: Number(courseid), subjectid: Number(subjectid||0), name, description, type, link, sortorder };
+            const res = await apiFetch("/course-materials", { method: "POST", body: payload });
+            const created = Array.isArray(res) ? res : (res?.data ?? res);
+            const updated = [created, ...materials].slice().sort((a:any,b:any)=>b.id-a.id);
+            setMaterials(updated);
+            setFilteredMaterials(updated);
+            toast.success("Course Material created", { position: 'top-center' });
+          } catch (e:any) {
+            const msg = e?.body || e?.message || "Failed to create Course Material";
+            toast.error(typeof msg === 'string' ? msg : JSON.stringify(msg), { position: 'top-center' });
+          }
+        }}
         onRowUpdated={handleRowUpdated}
         onRowDeleted={handleRowDeleted}
-        showSearch={false}
       />
     </div>
   );

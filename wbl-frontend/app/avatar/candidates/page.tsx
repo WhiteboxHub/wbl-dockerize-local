@@ -1,19 +1,18 @@
-
 "use client";
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { ColDef, ValueFormatterParams } from "ag-grid-community";
 import { Badge } from "@/components/admin_ui/badge";
 import { Input } from "@/components/admin_ui/input";
 import { Label } from "@/components/admin_ui/label";
-import { SearchIcon, PlusCircle, RefreshCw } from "lucide-react";
+import { SearchIcon, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/admin_ui/button";
 import { toast, Toaster } from "sonner";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AGGridTable } from "@/components/AGGridTable";
 import { createPortal } from "react-dom";
-import axios from "axios";
 import Link from "next/link";
-
+import { useForm } from "react-hook-form";
+import api from "@/lib/api";
 
 type Candidate = {
   id: number;
@@ -41,6 +40,7 @@ type Candidate = {
   batchid: number;
   candidate_folder?: string | null;
   notes?: string | null;
+  batch?: Batch | null;
 };
 
 type FormData = {
@@ -82,11 +82,35 @@ type Batch = {
 
 const statusOptions = ["active", "discontinued", "break", "closed"];
 const workStatusOptions = [
-  "Waiting for Status",
-  "Citizen",
-  "Visa",
-  "Permanent resident",
-  "EAD"
+  "US_CITIZEN",
+  "GREEN_CARD",
+  "GC_EAD",
+  "I485_EAD",
+  "I140_APPROVED",
+  "F1",
+  "F1_OPT",
+  "F1_CPT",
+  "J1",
+  "J1_AT",
+  "H1B",
+  "H1B_TRANSFER",
+  "H1B_CAP_EXEMPT",
+  "H4",
+  "H4_EAD",
+  "L1A",
+  "L1B",
+  "L2",
+  "L2_EAD",
+  "O1",
+  "TN",
+  "E3",
+  "E3_EAD",
+  "E2",
+  "E2_EAD",
+  "TPS_EAD",
+  "ASYLUM_EAD",
+  "REFUGEE_EAD",
+  "DACA_EAD",
 ];
 
 const initialFormData: FormData = {
@@ -112,13 +136,79 @@ const initialFormData: FormData = {
   github_link: "",
   batchid: 0,
   candidate_folder: "",
-  notes: ""
+  notes: "",
+};
+
+const cleanPhoneNumber = (phoneNumberString: string): string => {
+  if (!phoneNumberString) return "";
+  return ("" + phoneNumberString).replace(/\D/g, "");
+};
+
+const formatPhoneNumber = (phoneNumberString: string): string => {
+  if (!phoneNumberString) return "";
+  const cleaned = cleanPhoneNumber(phoneNumberString);
+
+  if (cleaned.length === 11 && cleaned.startsWith("1")) {
+    const match = cleaned.match(/^1(\d{3})(\d{3})(\d{4})$/);
+    if (match) {
+      return `+1 (${match[1]}) ${match[2]}-${match[3]}`;
+    }
+  }
+
+  if (cleaned.length === 10) {
+    const match = cleaned.match(/^(\d{3})(\d{3})(\d{4})$/);
+    if (match) {
+      return `+1 (${match[1]}) ${match[2]}-${match[3]}`;
+    }
+  }
+
+  return phoneNumberString;
+};
+
+const formatPhoneInput = (value: string): string => {
+  const cleaned = value.replace(/\D/g, "");
+  if (cleaned.length === 0) return "";
+  if (cleaned.length <= 3) return `(${cleaned}`;
+  if (cleaned.length <= 6)
+    return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3)}`;
+  if (cleaned.length <= 10)
+    return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6, 10)}`;
+  return `+1 (${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6, 10)}`;
+};
+
+const handlePhoneInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const formatted = formatPhoneInput(e.target.value);
+  e.target.value = formatted;
+};
+
+const formatDate = (dateString: string | Date | null | undefined) => {
+  if (!dateString) return "-";
+  const date = new Date(dateString);
+  return date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "UTC",
+  });
+};
+
+const toPascalCase = (str: string): string => {
+  if (!str) return str;
+  return str
+    .trim()
+    .split(/\s+/)
+    .map((word) => {
+      if (word.length === 0) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
 };
 
 const StatusRenderer = ({ value }: { value?: string }) => {
   const status = value?.toLowerCase() || "";
   const variantMap: Record<string, string> = {
     active: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+    inactive: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
     discontinued: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
     break: "bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300",
     closed: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300",
@@ -156,12 +246,10 @@ const CandidateNameRenderer = (params: any) => {
   }
   return (
     <Link
-
-      href={`/avatar/candidates/search?candidateId=${candidateId}`} 
+      href={`/avatar/candidates/search?candidateId=${candidateId}`}
       target="_blank"
       rel="noopener noreferrer"
-
-      className="text-black-600 hover:text-blue-800 font-medium cursor-pointer"
+      className="text-blue-600 hover:text-blue-800 underline font-medium cursor-pointer"
     >
       {candidateName}
     </Link>
@@ -174,15 +262,17 @@ const FilterHeaderComponent = ({
   options,
   label,
   color = "blue",
+  displayName,
   renderOption = (option: any) => option,
   getOptionValue = (option: any) => option,
-  getOptionKey = (option: any) => option
+  getOptionKey = (option: any) => option,
 }: {
   selectedItems: any[];
   setSelectedItems: React.Dispatch<React.SetStateAction<any[]>>;
   options: any[];
   label: string;
   color?: string;
+  displayName?: string;
   renderOption?: (option: any) => React.ReactNode;
   getOptionValue?: (option: any) => any;
   getOptionKey?: (option: any) => any;
@@ -190,16 +280,18 @@ const FilterHeaderComponent = ({
   const handleItemChange = (item: any) => {
     const value = getOptionValue(item);
     setSelectedItems((prev: any[]) => {
-      const isSelected = prev.some(i => getOptionValue(i) === value);
+      const isSelected = prev.some((i) => getOptionValue(i) === value);
       return isSelected
-        ? prev.filter(i => getOptionValue(i) !== value)
+        ? prev.filter((i) => getOptionValue(i) !== value)
         : [...prev, item];
     });
-  }
+  };
+
   const filterButtonRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [filterVisible, setFilterVisible] = useState(false);
+
   const toggleFilter = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (filterButtonRef.current) {
@@ -211,12 +303,15 @@ const FilterHeaderComponent = ({
     }
     setFilterVisible((v) => !v);
   };
+
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     e.stopPropagation();
     setSelectedItems(e.target.checked ? [...options] : []);
   };
+
   const isAllSelected = selectedItems.length === options.length && options.length > 0;
   const isIndeterminate = selectedItems.length > 0 && selectedItems.length < options.length;
+
   const colorMap: Record<string, string> = {
     blue: "bg-blue-500",
     green: "bg-green-500",
@@ -224,6 +319,7 @@ const FilterHeaderComponent = ({
     red: "bg-red-500",
     orange: "bg-orange-500",
   };
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (
@@ -250,39 +346,53 @@ const FilterHeaderComponent = ({
       window.removeEventListener("scroll", handleScroll, true);
     };
   }, [filterVisible]);
+
   return (
-    <div className="relative flex items-center w-full">
-      <span className="mr-2 flex-grow">{label}</span>
-      <div
-        ref={filterButtonRef}
-        className="flex items-center gap-1 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 p-1 rounded"
-        onClick={toggleFilter}
-      >
-        {selectedItems.length > 0 && (
-          <span className={`${colorMap[color]} text-white text-xs rounded-full px-2 py-0.5 min-w-[20px] text-center`}>
-            {selectedItems.length}
-          </span>
-        )}
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-4 w-4 text-gray-500 hover:text-gray-700"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
+    <div className="ag-cell-label-container" role="presentation">
+      <div className="ag-header-cell-label" role="presentation">
+        <span className="ag-header-cell-text">{displayName || label}</span>
+        <div
+          ref={filterButtonRef}
+          className="ag-header-icon ag-header-label-icon"
+          onClick={toggleFilter}
+          style={{
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            marginLeft: "4px",
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2l-7 8v5l-4-3v-2L3 6V4z"
-          />
-        </svg>
+          {selectedItems.length > 0 && (
+            <span
+              className={`${colorMap[color]} min-w-[20px] rounded-full px-2 py-0.5 text-center text-xs text-white`}
+              style={{ marginRight: "4px" }}
+            >
+              {selectedItems.length}
+            </span>
+          )}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-4 w-4"
+            style={{ color: selectedItems.length > 0 ? "#8b5cf6" : "#6b7280" }}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2l-7 8v5l-4-3v-2L3 6V4z"
+            />
+          </svg>
+        </div>
       </div>
+
       {filterVisible &&
         createPortal(
           <div
             ref={dropdownRef}
-            className="fixed bg-white border rounded-lg shadow-xl p-3 flex flex-col space-y-2 w-56 pointer-events-auto dark:bg-gray-800 dark:border-gray-600 filter-dropdown text-sm"
+            className="filter-dropdown pointer-events-auto fixed flex w-56 flex-col space-y-2 rounded-lg border bg-white p-3 text-sm shadow-xl dark:border-gray-600 dark:bg-gray-800"
             style={{
               top: dropdownPos.top + 5,
               left: dropdownPos.left,
@@ -292,9 +402,9 @@ const FilterHeaderComponent = ({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="border-b pb-2 mb-2">
+            <div className="mb-2 border-b pb-2">
               <label
-                className="flex items-center px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer rounded font-medium,text-sm"
+                className="font-medium text-sm flex cursor-pointer items-center rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700"
                 onClick={(e) => e.stopPropagation()}
               >
                 <input
@@ -312,11 +422,11 @@ const FilterHeaderComponent = ({
             {options.map((option) => {
               const value = getOptionValue(option);
               const key = getOptionKey(option);
-              const isSelected = selectedItems.some(i => getOptionValue(i) === value);
+              const isSelected = selectedItems.some((i) => getOptionValue(i) === value);
               return (
                 <label
                   key={key}
-                  className="flex items-center px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer rounded"
+                  className="flex cursor-pointer items-center rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <input
@@ -330,13 +440,13 @@ const FilterHeaderComponent = ({
               );
             })}
             {selectedItems.length > 0 && (
-              <div className="border-t pt-2 mt-2">
+              <div className="mt-2 border-t pt-2">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setSelectedItems([]);
                   }}
-                  className="w-full text-sm text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 py-1"
+                  className="w-full py-1 text-sm text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
                 >
                   Clear All
                 </button>
@@ -355,416 +465,590 @@ export default function CandidatesPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isNewCandidate = searchParams.get("newcandidate") === "true";
+
   const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [filteredCandidates, setFilteredCandidates] = useState<Candidate[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchBy, setSearchBy] = useState("all");
-  const [sortModel, setSortModel] = useState([{ colId: 'enrolled_date', sort: 'desc' as 'desc' }]);
+  const [sortModel, setSortModel] = useState([{ colId: "enrolled_date", sort: "desc" as "desc" }]);
   const [filterModel, setFilterModel] = useState({});
-  const [newCandidateForm, setNewCandidateForm] = useState(isNewCandidate);
-  const [formData, setFormData] = useState<FormData>(initialFormData);
-  const [formSaveLoading, setFormSaveLoading] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(isNewCandidate);
   const [loadingRowId, setLoadingRowId] = useState<number | null>(null);
   const [allBatches, setAllBatches] = useState<Batch[]>([]);
   const [mlBatches, setMlBatches] = useState<Batch[]>([]);
   const [batchesLoading, setBatchesLoading] = useState(true);
 
+  // Filter states
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
   const [selectedWorkStatuses, setSelectedWorkStatuses] = useState<string[]>([]);
   const [selectedBatches, setSelectedBatches] = useState<Batch[]>([]);
 
+  const apiPath = "/candidates";
 
-  const apiEndpoint = useMemo(() => `${process.env.NEXT_PUBLIC_API_URL}/candidates`, []);
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+    setValue,
+    watch,
+  } = useForm<FormData>({
+    defaultValues: initialFormData,
+  });
 
-  const gridOptions = useMemo(() => ({
-    defaultColDef: {
-      filter: 'agSetColumnFilter',
-      sortable: true,
-      resizable: true,
-    },
-    suppressRowClickSelection: true,
-    rowSelection: 'single',
-  }), []);
+  const fullNameValue = watch("full_name");
+  const emergContactNameValue = watch("emergcontactname");
 
-  const courseId = "3";
+  useEffect(() => {
+    if (fullNameValue) {
+      const pascalCased = toPascalCase(fullNameValue);
+      if (fullNameValue !== pascalCased) {
+        setValue("full_name", pascalCased, { shouldValidate: true });
+      }
+    }
+  }, [fullNameValue, setValue]);
+
+  useEffect(() => {
+    if (emergContactNameValue) {
+      const pascalCased = toPascalCase(emergContactNameValue);
+      if (emergContactNameValue !== pascalCased) {
+        setValue("emergcontactname", pascalCased, { shouldValidate: true });
+      }
+    }
+  }, [emergContactNameValue, setValue]);
+
+  // ============================================
+  // KEY CHANGE: Filter candidates using useMemo
+  // ============================================
+  const filteredCandidates = useMemo(() => {
+    let filtered = candidates;
+
+    // Filter by status
+    if (selectedStatuses.length > 0) {
+      filtered = filtered.filter((candidate) => {
+        const candidateStatus = (candidate.status || "").toLowerCase();
+        return selectedStatuses.some(
+          (status) => status.toLowerCase() === candidateStatus
+        );
+      });
+    }
+
+    // Filter by work status
+    if (selectedWorkStatuses.length > 0) {
+      filtered = filtered.filter((candidate) => {
+        const candidateWorkStatus = (candidate.workstatus || "").toLowerCase();
+        return selectedWorkStatuses.some(
+          (ws) => ws.toLowerCase() === candidateWorkStatus
+        );
+      });
+    }
+
+    // Filter by batch
+    if (selectedBatches.length > 0) {
+      filtered = filtered.filter((candidate) => {
+        return selectedBatches.some(
+          (batch) => batch.batchid === candidate.batchid
+        );
+      });
+    }
+
+    return filtered;
+  }, [candidates, selectedStatuses, selectedWorkStatuses, selectedBatches]);
+
+  // Calculate counts for display
+  const displayCount = filteredCandidates.length;
+  const totalCount = candidates.length;
+  const hasActiveFilters =
+    selectedStatuses.length > 0 ||
+    selectedWorkStatuses.length > 0 ||
+    selectedBatches.length > 0;
+
+  const columnDefs: ColDef<any, any>[] = useMemo(
+    () => [
+      {
+        field: "id",
+        headerName: "ID",
+        width: 80,
+        pinned: "left",
+        sortable: true,
+        filter: "agTextColumnFilter",
+        valueGetter: (params) => params.data?.id || "N/A",
+      },
+      {
+        field: "full_name",
+        headerName: "Full Name",
+        width: 180,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        valueGetter: (params) => {
+          const name = params.data?.full_name;
+          return name ? toPascalCase(name) : "";
+        },
+        cellRenderer: CandidateNameRenderer,
+      },
+      {
+        field: "phone",
+        headerName: "Phone",
+        width: 150,
+        editable: true,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        valueFormatter: (params: ValueFormatterParams) => {
+          if (!params.value) return "";
+          return formatPhoneNumber(params.value);
+        },
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          const formattedPhone = formatPhoneNumber(params.value);
+          const cleanPhone = cleanPhoneNumber(params.value);
+          return (
+            <a href={`tel:+${cleanPhone}`} className="text-blue-600 underline hover:text-blue-800">
+              {formattedPhone}
+            </a>
+          );
+        },
+        valueParser: (params) => cleanPhoneNumber(params.newValue),
+      },
+      {
+        field: "email",
+        headerName: "Email",
+        width: 200,
+        editable: true,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <a
+              href={`mailto:${params.value}`}
+              className="text-blue-600 underline hover:text-blue-800"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {params.value}
+            </a>
+          );
+        },
+      },
+      {
+        field: "batch",
+        headerName: "Batch",
+        width: 140,
+        sortable: true,
+        filter: false, // CHANGED: Disabled AG Grid's built-in filter
+        suppressHeaderMenuButton: true,
+        valueGetter: (params) => {
+          const batch = params.data?.batch;
+          return batch ? batch.batchname : "N/A";
+        },
+        comparator: (valueA, valueB) => {
+          if (valueA === valueB) return 0;
+          if (valueA === "N/A") return 1;
+          if (valueB === "N/A") return -1;
+          return valueA.localeCompare(valueB);
+        },
+        cellRenderer: (params: any) => {
+          const batch = params.data?.batch;
+          return batch ? batch.batchname : "N/A";
+        },
+        headerComponent: FilterHeaderComponent,
+        headerComponentParams: {
+          selectedItems: selectedBatches,
+          setSelectedItems: setSelectedBatches,
+          options: mlBatches,
+          label: "Batch",
+          displayName: "Batch",
+          color: "purple",
+          renderOption: (option: Batch) => option.batchname,
+          getOptionValue: (option: Batch) => option,
+          getOptionKey: (option: Batch) => option.batchid,
+        },
+      },
+      {
+        field: "status",
+        headerName: "Status",
+        width: 120,
+        sortable: true,
+        filter: false, // CHANGED: Disabled AG Grid's built-in filter
+        suppressHeaderMenuButton: true,
+        valueGetter: (params) => params.data?.status || "",
+        comparator: (valueA, valueB) => {
+          const order = ["active", "break", "discontinued", "closed"];
+          const indexA = order.indexOf(valueA.toLowerCase());
+          const indexB = order.indexOf(valueB.toLowerCase());
+          if (indexA === -1 && indexB === -1) return valueA.localeCompare(valueB);
+          if (indexA === -1) return 1;
+          if (indexB === -1) return -1;
+          return indexA - indexB;
+        },
+        cellRenderer: StatusRenderer,
+        headerComponent: FilterHeaderComponent,
+        headerComponentParams: {
+          selectedItems: selectedStatuses,
+          setSelectedItems: setSelectedStatuses,
+          options: statusOptions,
+          label: "Status",
+          displayName: "Status",
+          color: "blue",
+          renderOption: (option: string) => <StatusRenderer value={option} />,
+          getOptionValue: (option: string) => option,
+          getOptionKey: (option: string) => option,
+        },
+      },
+      {
+        field: "workstatus",
+        headerName: "Work Status",
+        width: 150,
+        sortable: true,
+        filter: false, // CHANGED: Disabled AG Grid's built-in filter
+        suppressHeaderMenuButton: true,
+        valueGetter: (params) => params.data?.workstatus || "",
+        comparator: (valueA, valueB) => {
+          const order = ["waiting for status", "citizen", "permanent resident", "ead", "visa"];
+          const indexA = order.indexOf(valueA.toLowerCase());
+          const indexB = order.indexOf(valueB.toLowerCase());
+          if (indexA === -1 && indexB === -1) return valueA.localeCompare(valueB);
+          if (indexA === -1) return 1;
+          if (indexB === -1) return -1;
+          return indexA - indexB;
+        },
+        cellRenderer: WorkStatusRenderer,
+        headerComponent: FilterHeaderComponent,
+        headerComponentParams: {
+          selectedItems: selectedWorkStatuses,
+          setSelectedItems: setSelectedWorkStatuses,
+          options: workStatusOptions,
+          label: "Work Status",
+          displayName: "Work Status",
+          color: "green",
+          renderOption: (option: string) => option,
+          getOptionValue: (option: string) => option,
+          getOptionKey: (option: string) => option,
+        },
+      },
+      {
+        field: "enrolled_date",
+        headerName: "Enrolled Date",
+        width: 150,
+        sortable: true,
+        filter: "agDateColumnFilter",
+        valueFormatter: ({ value }: ValueFormatterParams) => formatDate(value),
+      },
+      {
+        field: "education",
+        headerName: "Education",
+        width: 200,
+        sortable: true,
+        filter: "agTextColumnFilter",
+      },
+      {
+        field: "workexperience",
+        headerName: "Work Experience",
+        width: 200,
+        sortable: true,
+        filter: "agTextColumnFilter",
+      },
+      {
+        field: "ssn",
+        headerName: "SSN",
+        width: 120,
+        sortable: true,
+        filter: "agTextColumnFilter",
+      },
+      {
+        field: "agreement",
+        headerName: "Agreement",
+        width: 100,
+        sortable: true,
+        filter: "agTextColumnFilter",
+      },
+      {
+        field: "secondaryemail",
+        headerName: "Secondary Email",
+        width: 200,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <a
+              href={`mailto:${params.value}`}
+              className="text-blue-600 underline hover:text-purple-800"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {params.value}
+            </a>
+          );
+        },
+      },
+      {
+        field: "secondaryphone",
+        headerName: "Secondary Phone",
+        width: 150,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        valueFormatter: (params: ValueFormatterParams) => {
+          if (!params.value) return "";
+          return formatPhoneNumber(params.value);
+        },
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          const formattedPhone = formatPhoneNumber(params.value);
+          const cleanPhone = cleanPhoneNumber(params.value);
+          return (
+            <a href={`tel:+${cleanPhone}`} className="text-blue-600 underline hover:text-purple-800">
+              {formattedPhone}
+            </a>
+          );
+        },
+        valueParser: (params) => cleanPhoneNumber(params.newValue),
+      },
+      {
+        field: "address",
+        headerName: "Address",
+        width: 300,
+        sortable: true,
+        filter: "agTextColumnFilter",
+      },
+      {
+        field: "linkedin_id",
+        headerName: "LinkedIn ID",
+        width: 150,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          const url = params.value.trim();
+          const href =
+            url.startsWith("http://") || url.startsWith("https://")
+              ? url
+              : `https://linkedin.com/in/${url}`;
+          return (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 underline hover:text-purple-800 text-sm sm:text-base font-medium"
+            >
+              {params.value}
+            </a>
+          );
+        },
+      },
+      {
+        field: "dob",
+        headerName: "Date of Birth",
+        width: 150,
+        sortable: true,
+        editable: true,
+        filter: "agDateColumnFilter",
+        valueFormatter: ({ value }: ValueFormatterParams) => formatDate(value),
+        valueParser: (params) => {
+          if (!params.newValue) return null;
+          const date = new Date(params.newValue);
+          return date.toISOString();
+        },
+        cellEditor: "agDateCellEditor",
+        cellEditorParams: {
+          min: "1900-01-01",
+          max: new Date().toISOString().split("T")[0],
+        },
+      },
+      {
+        field: "emergcontactname",
+        headerName: "Emergency Contact Name",
+        width: 200,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        valueGetter: (params) => {
+          const name = params.data?.emergcontactname;
+          return name ? toPascalCase(name) : "";
+        },
+      },
+      {
+        field: "emergcontactemail",
+        headerName: "Emergency Contact Email",
+        width: 200,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <a
+              href={`mailto:${params.value}`}
+              className="text-blue-600 underline hover:text-purple-800"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {params.value}
+            </a>
+          );
+        },
+      },
+      {
+        field: "emergcontactphone",
+        headerName: "Emergency Contact Phone",
+        width: 150,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        valueFormatter: (params: ValueFormatterParams) => {
+          if (!params.value) return "";
+          return formatPhoneNumber(params.value);
+        },
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          const formattedPhone = formatPhoneNumber(params.value);
+          const cleanPhone = cleanPhoneNumber(params.value);
+          return (
+            <a href={`tel:+${cleanPhone}`} className="text-blue-600 underline hover:text-purple-800">
+              {formattedPhone}
+            </a>
+          );
+        },
+        valueParser: (params) => cleanPhoneNumber(params.newValue),
+      },
+      {
+        field: "emergcontactaddrs",
+        headerName: "Emergency Contact Address",
+        width: 300,
+        sortable: true,
+        filter: "agTextColumnFilter",
+      },
+      {
+        field: "fee_paid",
+        headerName: "Fee Paid",
+        width: 120,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        cellClass: (params) => (params.value && params.value > 0 ? "text-green-500" : ""),
+        valueFormatter: ({ value }: ValueFormatterParams) =>
+          value != null ? `$${Number(value).toLocaleString()}` : "",
+        cellStyle: { textAlign: "right" },
+      },
+      {
+        field: "notes",
+        headerName: "Notes",
+        minWidth: 100,
+        editable: true,
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <div
+              className="prose prose-sm dark:prose-invert max-w-none"
+              dangerouslySetInnerHTML={{ __html: params.value }}
+            />
+          );
+        },
+      },
+      {
+        field: "candidate_folder",
+        headerName: "Candidate Folder",
+        width: 200,
+        sortable: true,
+        filter: "agTextColumnFilter",
+        cellRenderer: (params: any) => {
+          if (!params.value) return "";
+          return (
+            <a
+              href={params.value}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 underline hover:text-blue-800"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {params.value}
+            </a>
+          );
+        },
+      },
+    ],
+    [selectedStatuses, selectedWorkStatuses, selectedBatches, mlBatches]
+  );
+
+  const gridOptions = useMemo(
+    () => ({
+      defaultColDef: {
+        filter: "agTextColumnFilter",
+        sortable: true,
+        resizable: true,
+      },
+      suppressRowClickSelection: true,
+      rowSelection: "single",
+      onSortChanged: () => {
+        if (gridRef.current && gridRef.current.api) {
+          const sortModel = gridRef.current.api.getSortModel();
+          setSortModel(sortModel);
+        }
+      },
+    }),
+    []
+  );
 
   useEffect(() => {
     const newCandidateParam = searchParams.get("newcandidate") === "true";
-    setNewCandidateForm(newCandidateParam);
+    setIsModalOpen(newCandidateParam);
   }, [searchParams]);
 
-  const formatPhoneNumber = (phoneNumberString: string) => {
-    const cleaned = ('' + phoneNumberString).replace(/\D/g, '');
-    const match = cleaned.match(/^(\d{3})(\d{3})(\d{4})$/);
-    if (match) return `+1 (${match[1]}) ${match[2]}-${match[3]}`;
-    return `+1 ${phoneNumberString}`;
-  };
-
-  const formatDate = (dateString: string | Date | null | undefined) => {
-    if (!dateString) return "-";
-    const date = new Date(dateString);
-    return date.toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      timeZone: "UTC"
-    });
-  };
-
-
-  const columnDefs: ColDef<any, any>[] = useMemo(() => [
-{
-  field: "id",
-  headerName: "ID",
-  width: 80,
-  pinned: "left",
-  sortable: true,
-  filter: 'agSetColumnFilter',
-  valueGetter: (params) => params.data?.id || "N/A",
-},
-
-    {
-      field: "full_name",
-      headerName: "Full Name",
-      width: 180,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: CandidateNameRenderer,
-    },
-    {
-      field: "phone",
-      headerName: "Phone",
-      width: 150,
-      editable: true,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        const formattedPhone = formatPhoneNumber(params.value);
-        return (
-          <a href={`tel:${params.value}`} className="text-blue-600 underline hover:text-blue-800">
-            {formattedPhone}
-          </a>
+  useEffect(() => {
+    const fetchBatches = async () => {
+      setBatchesLoading(true);
+      try {
+        const res = await api.get("/batch");
+        const rawBatches = res.data?.data ?? res.data;
+        const sortedAllBatches = [...(rawBatches || [])].sort(
+          (a: Batch, b: Batch) => b.batchid - a.batchid
         );
-      },
-    },
-    {
-      field: "email",
-      headerName: "Email",
-      width: 200,
-      editable: true,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
-          <a
-            href={`mailto:${params.value}`}
-            className="text-blue-600 underline hover:text-blue-800"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {params.value}
-          </a>
-        );
-      },
-    },
-    {
-      field: "batchid",
-      headerName: "Batch",
-      width: 140,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value || !allBatches.length) return params.value || "";
-        const batch = allBatches.find(b => b.batchid === params.value);
-        return batch ? (
-          <span title={`Batch ID: ${params.value}`}>
-            {batch.batchname}
-          </span>
-        ) : params.value;
-      },
-      headerComponent: (props: any) => (
-        <FilterHeaderComponent
-          {...props}
-          selectedItems={selectedBatches}
-          setSelectedItems={setSelectedBatches}
-          options={mlBatches}
-          label="Batch"
-          color="purple"
-          renderOption={(option: Batch) => option.batchname}
-          getOptionValue={(option: Batch) => option}
-          getOptionKey={(option: Batch) => option.batchid}
-        />
-      ),
-    },
-
-    {
-      field: "status",
-      headerName: "Status",
-      width: 120,
-      sortable: true,
-      filter: 'agTextColumnFilter',
-      cellRenderer: StatusRenderer,
-      headerComponent: (props: any) => (
-        <FilterHeaderComponent
-          {...props}
-          selectedItems={selectedStatuses}
-          setSelectedItems={setSelectedStatuses}
-          options={statusOptions}
-          label="Status"
-          color="blue"
-          renderOption={(option) => <StatusRenderer value={option} />}
-          getOptionValue={(option) => option}
-          getOptionKey={(option) => option}
-        />
-      ),
-    },
-
-    {
-      field: "workstatus",
-      headerName: "Work Status",
-      width: 150,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: WorkStatusRenderer,
-      headerComponent: (props: any) => (
-        <FilterHeaderComponent
-          {...props}
-          selectedItems={selectedWorkStatuses}
-          setSelectedItems={setSelectedWorkStatuses}
-          options={workStatusOptions}
-          label="Work Status"
-          color="green"
-          renderOption={(option) => option}
-          getOptionValue={(option) => option}
-          getOptionKey={(option) => option}
-        />
-      ),
-    },
-    {
-      field: "enrolled_date",
-      headerName: "Enrolled Date",
-      width: 150,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      valueFormatter: ({ value }: ValueFormatterParams) => formatDate(value),
-    },
-    {
-      field: "education",
-      headerName: "Education",
-      width: 200,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "workexperience",
-      headerName: "Work Experience",
-      width: 200,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "ssn",
-      headerName: "SSN",
-      width: 120,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "agreement",
-      headerName: "Agreement",
-      width: 100,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "secondaryemail",
-      headerName: "Secondary Email",
-      width: 200,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
-          <a
-            href={`mailto:${params.value}`}
-            className="text-blue-600 underline hover:text-purple-800"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {params.value}
-          </a>
-        );
-      },
-    },
-    {
-      field: "secondaryphone",
-      headerName: "Secondary Phone",
-      width: 150,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        const formattedPhone = formatPhoneNumber(params.value);
-        return (
-          <a href={`tel:${params.value}`} className="text-blue-600 underline hover:text-purple-800">
-            {formattedPhone}
-          </a>
-        );
-      },
-    },
-    {
-      field: "address",
-      headerName: "Address",
-      width: 300,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "linkedin_id",
-      headerName: "LinkedIn ID",
-      width: 150,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        const formattedPhone = formatPhoneNumber(params.value);
-        return (
-          <a href={`tel:${params.value}`} className="text-blue-600 underline hover:text-purple-800">
-            {formattedPhone}
-          </a>
-        );
+        setAllBatches(sortedAllBatches);
+        let mlBatchesOnly = sortedAllBatches.filter((batch) => {
+          const subject = (batch.subject || "").toLowerCase();
+          return (
+            subject === "ml" ||
+            subject === "machine learning" ||
+            subject === "machinelearning" ||
+            subject?.includes("ml")
+          );
+        });
+        if (mlBatchesOnly.length === 0) {
+          mlBatchesOnly = sortedAllBatches.filter((batch) => batch.courseid === 3);
+        }
+        if (mlBatchesOnly.length === 0) {
+          mlBatchesOnly = sortedAllBatches;
+        }
+        setMlBatches(mlBatchesOnly);
+        if (isModalOpen && mlBatchesOnly.length > 0 && mlBatchesOnly[0]?.batchid) {
+          setValue("batchid", mlBatchesOnly[0].batchid);
+        }
+      } catch (error) {
+        console.error("Failed to load batches:", error);
+      } finally {
+        setBatchesLoading(false);
       }
+    };
+    fetchBatches();
+  }, [isModalOpen, setValue]);
 
-    },
-    {
-      field: "dob",
-      headerName: "Date of Birth",
-      width: 150,
-      sortable: true,
-      editable: true,
-      filter: 'agSetColumnFilter',
-      valueFormatter: ({ value }: ValueFormatterParams) => formatDate(value),
-      valueParser: (params) => {
-        if (!params.newValue) return null;
-        const date = new Date(params.newValue);
-        return date.toISOString();
-      },
-      cellEditor: 'agDateCellEditor',
-      cellEditorParams: {
-        min: '1900-01-01',
-        max: new Date().toISOString().split('T')[0]
+  useEffect(() => {
+    fetchCandidates();
+  }, []);
+
+  useEffect(() => {
+    const debounceTimer = setTimeout(() => {
+      if (searchTerm !== undefined) {
+        const autoSearchBy = detectSearchBy(searchTerm);
+        fetchCandidates(searchTerm, autoSearchBy, sortModel, filterModel);
       }
-    },
-    {
-      field: "emergcontactname",
-      headerName: "Emergency Contact Name",
-      width: 200,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "emergcontactemail",
-      headerName: "Emergency Contact Email",
-      width: 200,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
-          <a
-            href={`mailto:${params.value}`}
-            className="text-blue-600 underline hover:text-purple-800"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {params.value}
-          </a>
-        );
-      },
-    },
-    {
-      field: "emergcontactphone",
-      headerName: "Emergency Contact Phone",
-      width: 150,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        const formattedPhone = formatPhoneNumber(params.value);
-        return (
-          <a href={`tel:${params.value}`} className="text-blue-600 underline hover:text-purple-800">
-            {formattedPhone}
-          </a>
-        );
-      },
-    },
-    {
-      field: "emergcontactaddrs",
-      headerName: "Emergency Contact Address",
-      width: 300,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "fee_paid",
-      headerName: "Fee Paid",
-      width: 120,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellClass: (params) =>
-        params.value && params.value > 0
-          ? 'text-green-500 '
-          : '',
-      valueFormatter: ({ value }: ValueFormatterParams) =>
-        value != null ? `$${Number(value).toLocaleString()}` : "",
-      cellStyle: { textAlign: 'right' }
-    },
-    
-    {
-      field: "move_to_prep",
-      headerName: "Move to Prep",
-      width: 150,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => (
-        <span>
-          {params.value ? "Yes" : "No"}
-        </span>
-      )
-    },
+    }, 500);
+    return () => clearTimeout(debounceTimer);
+  }, [searchTerm, searchBy, sortModel, filterModel]);
 
-    
-    {
-      field: "notes",
-      headerName: "Notes",
-      width: 300,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-    },
-    {
-      field: "candidate_folder",
-      headerName: "Candidate Folder",
-      width: 200,
-      sortable: true,
-      filter: 'agSetColumnFilter',
-      cellRenderer: (params: any) => {
-        if (!params.value) return "";
-        return (
-          <a
-            href={params.value}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 underline hover:text-blue-800"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {params.value}
-          </a>
-        );
-      },
-    },
-  ], [allBatches, selectedStatuses, selectedWorkStatuses, selectedBatches]);
-
+  useEffect(() => {
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        handleCloseModal();
+      }
+    };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, []);
 
   const fetchCandidates = useCallback(
     async (
@@ -775,7 +1059,7 @@ export default function CandidatesPage() {
     ) => {
       setLoading(true);
       try {
-        let url = `${apiEndpoint}?limit=0`;
+        let url = `${apiPath}?limit=0`;
         if (search && search.trim()) {
           url += `&search=${encodeURIComponent(search.trim())}&search_by=${searchBy}`;
         }
@@ -786,138 +1070,28 @@ export default function CandidatesPage() {
         if (Object.keys(filters).length > 0) {
           url += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
         }
-        const token = localStorage.getItem("token");
-        const res = await fetch(url, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-
-          },
-        });
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-        const data = await res.json();
-        setCandidates(data.data);
-      } catch (err) {
-        const error =
-          err instanceof Error ? err.message : "Failed to load candidates";
-        setError(error);
-        toast.error(error);
+        const res = await api.get(url);
+        const payload = res.data;
+        const dataArray = payload?.data ?? payload;
+        if (!Array.isArray(dataArray)) {
+          setCandidates([]);
+          console.warn("Unexpected candidates response", payload);
+        } else {
+          setCandidates(dataArray);
+        }
+      } catch (err: any) {
+        const message =
+          err?.response?.data?.message || err?.message || "Failed to load candidates";
+        setError(message);
+        toast.error(message);
+        console.error("fetchCandidates error ->", err);
       } finally {
         setLoading(false);
         if (searchInputRef.current) searchInputRef.current.focus();
       }
     },
-    [apiEndpoint]
+    [apiPath]
   );
-
-  const getWorkStatusColor = (status) => {
-    switch (status.toLowerCase()) {
-      case "waiting for status":
-        return { backgroundColor: "#FFEDD5", color: "#C2410C" }; // orange
-      case "citizen":
-        return { backgroundColor: "#D1FAE5", color: "#065F46" }; // green
-      case "visa":
-        return { backgroundColor: "#DBEAFE", color: "#1D4ED8" }; // blue
-      case "others":
-        return { backgroundColor: "#F3E8FF", color: "#7C3AED" }; // purple
-      case "ead":
-        return { backgroundColor: "#FEF3C7", color: "#92400E" }; // yellow
-      default:
-        return { backgroundColor: "white", color: "black" };
-    }
-  };
-
-  useEffect(() => {
-    const fetchBatches = async () => {
-      setBatchesLoading(true);
-      try {
-        const token = localStorage.getItem('accesstoken');
-        const res = await axios.get(`${process.env.NEXT_PUBLIC_API_URL}/batch`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-
-        const sortedAllBatches = [...res.data].sort((a: Batch, b: Batch) => b.batchid - a.batchid);
-        setAllBatches(sortedAllBatches);
-
-        const uniqueSubjects = [...new Set(sortedAllBatches.map(batch => batch.subject))];
-        const uniqueCourseIds = [...new Set(sortedAllBatches.map(batch => batch.courseid))];
-        console.log(' Available subjects:', uniqueSubjects);
-        console.log(' Available course IDs:', uniqueCourseIds);
-        console.log(' Total batches:', sortedAllBatches.length);
-
-        let mlBatchesOnly = sortedAllBatches.filter(batch => {
-          const subject = batch.subject?.toLowerCase();
-          return subject === 'ml' ||
-            subject === 'machine learning' ||
-            subject === 'machinelearning' ||
-            subject?.includes('ml');
-        });
-        if (mlBatchesOnly.length === 0) {
-          console.log('No ML batches found by subject, trying courseid = 3');
-          mlBatchesOnly = sortedAllBatches.filter(batch => batch.courseid === 3);
-        }
-        if (mlBatchesOnly.length === 0) {
-          console.warn('No ML batches found! Showing all batches in form as fallback');
-          mlBatchesOnly = sortedAllBatches;
-        }
-        console.log(' Filtered ML batches for form:', mlBatchesOnly.length);
-        setMlBatches(mlBatchesOnly);
-
-        if (isNewCandidate && mlBatchesOnly.length > 0 && mlBatchesOnly[0]?.batchid) {
-          setFormData(prev => ({ ...prev, batchid: mlBatchesOnly[0].batchid }));
-        }
-      } catch (error) {
-        console.error('Failed to load batches:', error);
-      } finally {
-        setBatchesLoading(false);
-      }
-    };
-    fetchBatches();
-  }, [courseId, isNewCandidate]);
-
-  useEffect(() => {
-    let filtered = [...candidates];
-    if (selectedStatuses.length > 0) {
-      filtered = filtered.filter(candidate =>
-        selectedStatuses.some(status => status.toLowerCase() === (candidate.status || "").toLowerCase())
-      );
-    }
-    if (selectedWorkStatuses.length > 0) {
-      filtered = filtered.filter(candidate =>
-        selectedWorkStatuses.some(ws => ws.toLowerCase() === (candidate.workstatus || "").toLowerCase())
-      );
-    }
-    if (selectedBatches.length > 0) {
-      filtered = filtered.filter(candidate =>
-        selectedBatches.some(batch => batch.batchid === candidate.batchid)
-      );
-    }
-    if (searchTerm.trim() !== "") {
-      const term = searchTerm.toLowerCase();
-      filtered = filtered.filter(candidate =>
-        candidate.full_name?.toLowerCase().includes(term) ||
-        candidate.email?.toLowerCase().includes(term) ||
-        candidate.phone?.toLowerCase().includes(term) ||
-        (candidate.id?.toString() || "").includes(term)
-      );
-    }
-
-    setFilteredCandidates(filtered);
-  }, [candidates, selectedStatuses, selectedWorkStatuses, selectedBatches, searchTerm]);
-
-  useEffect(() => {
-    fetchCandidates();
-  }, [fetchCandidates]);
-
-  useEffect(() => {
-    const debounceTimer = setTimeout(() => {
-      if (searchTerm !== undefined) {
-        const autoSearchBy = detectSearchBy(searchTerm);
-        fetchCandidates(searchTerm, autoSearchBy, sortModel, filterModel);
-      }
-    }, 500);
-    return () => clearTimeout(debounceTimer);
-  }, [searchTerm, searchBy, sortModel, filterModel, fetchCandidates]);
 
   const detectSearchBy = (search: string) => {
     if (/^\d+$/.test(search)) return "id";
@@ -926,151 +1100,132 @@ export default function CandidatesPage() {
     return "full_name";
   };
 
-  const handleOpenNewCandidateForm = () => {
-    router.push("/avatar/candidates?newcandidate=true", { scroll: false });
-    setNewCandidateForm(true);
-    if (mlBatches.length > 0) {
-      const latestBatch = mlBatches[0];
-      setFormData(prev => ({
-        ...prev,
-        batchid: latestBatch?.batchid
-      }));
-    }
-  };
-
-  const handleCloseNewCandidateForm = () => {
-    router.push("/avatar/candidates", { scroll: false });
-    setNewCandidateForm(false);
-    setFormData(initialFormData);
-  };
-
-  const handleNewCandidateFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value, type } = e.target;
-    if (name === "phone" || name === 'secondaryphone' || name === 'emergcontactphone') {
-      // Allow only numbers
-      const numericValue = value.replace(/[^0-9]/g, "");
-      setFormData((prev) => ({ ...prev, [name]: numericValue }));
+  const onSubmit = async (data: FormData) => {
+    if (!data.full_name.trim() || !data.email.trim() || !data.phone.trim() || !data.dob) {
+      toast.error("Full Name, Email, Phone, and Date of Birth are required");
       return;
     }
-
-    if (name === "full_name" || name === 'emergcontactname') {
-      // Allow letters (a-z, A-Z), dot, and spaces
-      const nameValue = value.replace(/[^a-zA-Z. ]/g, "");
-      setFormData((prev) => ({ ...prev, [name]: nameValue }));
-      return;
-    }
-    if (type === 'checkbox') {
-      const checked = (e.target as HTMLInputElement).checked;
-      setFormData(prev => ({ ...prev, [name]: checked ? 'Y' : 'N' }));
-    } else if (type === 'number') {
-      setFormData(prev => ({ ...prev, [name]: parseInt(value) || 0 }));
-    } else {
-      setFormData(prev => ({ ...prev, [name]: value }));
-    }
-
-  };
-
-  const handleNewCandidateFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.full_name.trim()) {
-      toast.error("Full name is required");
-      return;
-    }
-    setFormSaveLoading(true);
     try {
       const payload = {
-        ...formData,
-        enrolled_date: formData.enrolled_date || new Date().toISOString().split('T')[0],
-        status: formData.status || "active",
-        workstatus: formData.workstatus || "Waiting for Status",
-        agreement: formData.agreement || "N",
-        fee_paid: formData.fee_paid || 0
+        ...data,
+        full_name: toPascalCase(data.full_name),
+        phone: cleanPhoneNumber(data.phone),
+        secondaryphone: data.secondaryphone ? cleanPhoneNumber(data.secondaryphone) : "",
+        emergcontactphone: data.emergcontactphone ? cleanPhoneNumber(data.emergcontactphone) : "",
+        enrolled_date: data.enrolled_date || new Date().toISOString().split("T")[0],
+        status: data.status || "active",
+        workstatus: data.workstatus || "Waiting for Status",
+        agreement: data.agreement || "N",
+        fee_paid: data.fee_paid || 0,
       };
-      const response = await fetch(apiEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || "Failed to create candidate");
-      }
-      const newId = await response.json();
-      toast.success(`Candidate created successfully with ID: ${newId}`);
-      setNewCandidateForm(false);
-      setFormData(initialFormData);
+      const res = await api.post(apiPath, payload);
+      const newId = res.data?.id ?? res.data;
+      toast.success(`Candidate created successfully${newId ? ` (ID: ${newId})` : ""}`);
+      handleCloseModal();
       fetchCandidates(searchTerm, searchBy, sortModel, filterModel);
-    } catch (error) {
-      toast.error("Failed to create candidate: " + (error as Error).message);
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.message || error?.message || "Failed to create candidate";
+      toast.error("Failed to create candidate: " + message);
       console.error("Error creating candidate:", error);
-    } finally {
-      setFormSaveLoading(false);
     }
   };
 
-  const handleRowUpdated = useCallback(async (updatedRow: Candidate) => {
-    setLoadingRowId(updatedRow.id);
-    try {
-      const updatedData = { ...updatedRow };
-      if (!updatedData.status || updatedData.status === '') {
-        updatedData.status = 'active';
-      }
-      const { id, ...payload } = updatedData;
-
-      const response = await fetch(`${apiEndpoint}/${updatedRow.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) throw new Error("Failed to update candidate");
-
-      toast.success("Candidate updated successfully");
-
-      // Update only this row in AG Grid
-      if (gridRef.current) {
-        const rowNode = gridRef.current.api.getRowNode(updatedRow.id.toString());
-        if (rowNode) rowNode.setData(updatedData);
-      }
-
-    } catch (error) {
-      toast.error("Failed to update candidate");
-      console.error("Error updating candidate:", error);
-    } finally {
-      setLoadingRowId(null);
+  const handleOpenModal = () => {
+    router.push("/avatar/candidates?newcandidate=true", { scroll: false });
+    setIsModalOpen(true);
+    if (mlBatches.length > 0) {
+      const latestBatch = mlBatches[0];
+      setValue("batchid", latestBatch?.batchid);
     }
-  }, [apiEndpoint]);
-  // Add ESC key listener
-  useEffect(() => {
-    const handleEsc = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        handleCloseNewCandidateForm();
+  };
+
+  const handleCloseModal = () => {
+    router.push("/avatar/candidates", { scroll: false });
+    setIsModalOpen(false);
+    reset();
+  };
+
+  const handleRowUpdated = useCallback(
+    async (updatedRow: Candidate) => {
+      setLoadingRowId(updatedRow.id);
+      try {
+        const updatedData = {
+          ...updatedRow,
+          full_name: updatedRow.full_name ? toPascalCase(updatedRow.full_name) : updatedRow.full_name,
+          emergcontactname: updatedRow.emergcontactname
+            ? toPascalCase(updatedRow.emergcontactname)
+            : updatedRow.emergcontactname,
+          phone: updatedRow.phone ? cleanPhoneNumber(updatedRow.phone) : updatedRow.phone,
+          secondaryphone: updatedRow.secondaryphone
+            ? cleanPhoneNumber(updatedRow.secondaryphone)
+            : updatedRow.secondaryphone,
+          emergcontactphone: updatedRow.emergcontactphone
+            ? cleanPhoneNumber(updatedRow.emergcontactphone)
+            : updatedRow.emergcontactphone,
+          enrolled_date: updatedRow.enrolled_date || new Date().toISOString().split("T")[0],
+        };
+        if (!updatedData.status || updatedData.status === "") {
+          updatedData.status = "active";
+        }
+        const { id, ...payload } = updatedData;
+        await api.put(`${apiPath}/${updatedRow.id}`, payload);
+        setCandidates((prevCandidates) =>
+          prevCandidates.map((candidate) =>
+            candidate.id === updatedRow.id ? updatedData : candidate
+          )
+        );
+        if (gridRef.current) {
+          const rowNode = gridRef.current.api.getRowNode(updatedRow.id.toString());
+          if (rowNode) {
+            rowNode.setData(updatedData);
+            gridRef.current.api.redrawRows({ rowNodes: [rowNode] });
+
+            gridRef.current.api.refreshCells({
+              rowNodes: [rowNode],
+              force: true,
+            });
+
+            gridRef.current.api.refreshCells({ rowNodes: [rowNode], force: true });
+          } else {
+            gridRef.current.api.refreshCells({ force: true });
+          }
+        }
+        toast.success("Candidate updated successfully");
+      } catch (error) {
+        toast.error("Failed to update candidate");
+        console.error("Error updating candidate:", error);
+      } finally {
+        setLoadingRowId(null);
       }
-    };
-    window.addEventListener("keydown", handleEsc);
-    return () => window.removeEventListener("keydown", handleEsc);
-  }, []);
-  const handleRowDeleted = useCallback(async (id: number) => {
-    try {
-      const response = await fetch(`${apiEndpoint}/${id}`, { method: "DELETE" });
-      if (!response.ok) throw new Error("Failed to delete candidate");
+    },
+    [apiPath]
+  );
 
-      toast.success("Candidate deleted successfully");
-
-      if (gridRef.current) {
-        gridRef.current.api.applyTransaction({ remove: [{ id }] });
+  const handleRowDeleted = useCallback(
+    async (id: number) => {
+      try {
+        await api.delete(`${apiPath}/${id}`);
+        setCandidates((prevCandidates) =>
+          prevCandidates.filter((candidate) => candidate.id !== id)
+        );
+        if (gridRef.current) {
+          gridRef.current.api.applyTransaction({ remove: [{ id }] });
+        }
+        toast.success("Candidate deleted successfully");
+      } catch (error) {
+        toast.error("Failed to delete candidate");
+        console.error("Error deleting candidate:", error);
       }
+    },
+    [apiPath]
+  );
 
-    } catch (error) {
-      toast.error("Failed to delete candidate");
-      console.error("Error deleting candidate:", error);
-    }
-  }, [apiEndpoint]);
-
-  const handleFilterChanged = useCallback((filterModelFromGrid: any) => {
-    setFilterModel(filterModelFromGrid);
-    fetchCandidates(searchTerm, searchBy, sortModel, filterModelFromGrid);
-  }, [searchTerm, searchBy, sortModel, fetchCandidates]);
-
+  const clearAllFilters = () => {
+    setSelectedStatuses([]);
+    setSelectedWorkStatuses([]);
+    setSelectedBatches([]);
+  };
 
   if (error) {
     return (
@@ -1090,7 +1245,6 @@ export default function CandidatesPage() {
 
   return (
     <div className="space-y-6">
-   
       <style jsx global>{`
         .filter-dropdown {
           scrollbar-width: thin;
@@ -1112,388 +1266,477 @@ export default function CandidatesPage() {
       `}</style>
 
       <Toaster position="top-center" />
-      <div className="flex items-center justify-between">
-        <div>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex-1">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
             Candidates Management
           </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            All Candidates ({candidates.length})
-            {selectedStatuses.length > 0 || selectedWorkStatuses.length > 0 || selectedBatches.length > 0 ? (
-              <span className="ml-2 text-blue-600 dark:text-blue-400">
-                - Filtered ({filteredCandidates.length} shown)
-              </span>
-            ) : (
-              " - Sorted by latest first"
+          <div className="mt-2 sm:mt-0 sm:max-w-md">
+            <Label
+              htmlFor="search"
+              className="text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Search Candidates
+            </Label>
+            <div className="relative mt-1">
+              <SearchIcon className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
+              <Input
+                id="search"
+                type="text"
+                ref={searchInputRef}
+                placeholder="Search by ID, name, email, phone..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 text-sm sm:text-base"
+              />
+            </div>
+            {(searchTerm || hasActiveFilters) && (
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {hasActiveFilters
+                  ? `${displayCount} of ${totalCount} candidates shown (filtered)`
+                  : `${displayCount} candidates found`}
+              </p>
             )}
-          </p>
+          </div>
         </div>
-        <Button
-          onClick={handleOpenNewCandidateForm}
-          className="bg-green-600 hover:bg-green-700 text-white"
-        >
-          <PlusCircle className="mr-2 h-4 w-4" />
-          Add New Candidate
-        </Button>
       </div>
 
-      {/* Search */}
-      <div key="search-container" className="max-w-md">
-        {/* <Label
-          htmlFor="search"
-          className="text-sm font-medium text-gray-700 dark:text-gray-300"
-        >
-          Search Candidates
-        </Label> */}
-        <div className="relative mt-1">
-          <SearchIcon className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
-          <Input
-            key="search-input"
-            id="search"
-            type="text"
-            ref={searchInputRef}
-            placeholder="Search by ID, name, email, phone..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
-          />
-        </div>
-        {searchTerm && (
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            {filteredCandidates.length} candidates found
-          </p>
-        )}
-      </div>
-
-      {/* AG Grid Table */}
       <div className="flex w-full justify-center">
+
         <AGGridTable
-          key={`${filteredCandidates.length}-${selectedStatuses.join(',')}-${selectedWorkStatuses.join(',')}-${selectedBatches.map(b => b.batchid).join(',')}`}
+          key={`grid-${selectedStatuses.join(",")}-${selectedWorkStatuses.join(",")}-${selectedBatches.map((b) => b.batchid).join(",")}`}
           rowData={loading ? undefined : filteredCandidates}
+          title={`Candidates (${displayCount}${hasActiveFilters ? ` of ${totalCount}` : ""})`}
           columnDefs={columnDefs}
+          onRowAdded={async (newRow: any) => {
+            try {
+              const payload = {
+                full_name: toPascalCase(newRow.full_name || newRow.fullname || newRow.name || ""),
+                email: newRow.email || newRow.candidate_email || newRow.secondaryemail || "",
+                phone: cleanPhoneNumber(newRow.phone || newRow.phone_number || newRow.contact || ""),
+                dob: newRow.dob || newRow.date_of_birth || null,
+                batchid: Number(newRow.batchid) || 0,
+                status: newRow.status || "active",
+                workstatus: newRow.workstatus || "Waiting for Status",
+                enrolled_date: newRow.enrolled_date || new Date().toISOString().split("T")[0],
+                education: newRow.education || "",
+                workexperience: newRow.workexperience || "",
+                ssn: newRow.ssn || "",
+                agreement: newRow.agreement || "N",
+                secondaryemail: newRow.secondaryemail || newRow.secondary_email || "",
+                secondaryphone: cleanPhoneNumber(newRow.secondaryphone || newRow.secondary_phone || ""),
+                address: newRow.address || "",
+                linkedin_id: newRow.linkedin_id || newRow.linkedin || "",
+                emergcontactname: toPascalCase(newRow.emergcontactname || ""),
+                emergcontactemail: newRow.emergcontactemail || "",
+                emergcontactphone: cleanPhoneNumber(newRow.emergcontactphone || ""),
+                emergcontactaddrs: newRow.emergcontactaddrs || "",
+                fee_paid: Number(newRow.fee_paid) || 0,
+                github_link: newRow.github_link || newRow.github || "",
+                candidate_folder: newRow.candidate_folder || "",
+                notes: newRow.notes || "",
+              };
+              if (!payload.full_name || !payload.email || !payload.phone || !payload.dob || !payload.batchid) {
+                toast.error("Full Name, Email, Phone, Date of Birth, and Batch are required");
+                return;
+              }
+              await api.post(apiPath, payload);
+              toast.success("Candidate created successfully");
+              await fetchCandidates(searchTerm, searchBy, sortModel, filterModel);
+            } catch (err: any) {
+              const message = err?.response?.data?.message || err?.message || "Failed to create candidate";
+              toast.error(message);
+              console.error("Error creating candidate via grid add:", err);
+            }
+          }}
           onRowUpdated={handleRowUpdated}
           onRowDeleted={handleRowDeleted}
           showFilters={true}
-          getRowNodeId={data => data.id.toString()}
+          getRowNodeId={(data) => data?.id?.toString() || Math.random().toString()}
           showSearch={true}
           batches={allBatches}
-
           loading={loading}
           height="600px"
-          gridOptions={gridOptions}
-          overlayNoRowsTemplate={loading ? "" : '<span class="ag-overlay-no-rows-center">No candidates found</span>'}
+          overlayNoRowsTemplate={
+            loading ? "" : '<span class="ag-overlay-no-rows-center">No candidates found</span>'
+          }
         />
       </div>
-      {newCandidateForm && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              handleCloseNewCandidateForm();
-            }
-          }}
-        >
-          <div className="w-full max-w-6xl max-h-[90vh] overflow-y-auto rounded-xl bg-gradient-to-b from-white to-gray-50 p-6 shadow-2xl dark:from-gray-800 dark:to-gray-700">
-            <h2 className="mb-6 text-center text-3xl font-bold text-indigo-600 dark:text-indigo-400">
-              New Candidate Form
-            </h2>
 
-            <form onSubmit={handleNewCandidateFormSubmit}>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-                <div className="space-y-1">
-                  <Label htmlFor="full_name" className="block text-sm font-medium">Full Name *</Label>
-                  <Input
-                    id="full_name"
-                    name="full_name"
-                    value={formData.full_name}
-                    onChange={handleNewCandidateFormChange}
-                    required
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="email" className="block text-sm font-medium">Email *</Label>
-                  <Input
-                    id="email"
-                    name="email"
-                    type="email"
-                    value={formData.email}
-                    onChange={handleNewCandidateFormChange}
-                    required
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="phone" className="block text-sm font-medium">Phone *</Label>
-                  <Input
-                    id="phone"
-                    name="phone"
-                    type="tel"
-                    value={formData.phone}
-                    onChange={handleNewCandidateFormChange}
-                    required
-                    placeholder="+1 (123) 456-7890"
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="status" className="block text-sm font-medium">Status</Label>
-                  <select
-                    id="status"
-                    name="status"
-                    value={formData.status}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10 p-2 border rounded-md"
-                  >
-                    {statusOptions.map((status) => (
-                      <option key={status} value={status}>
-                        {status.charAt(0).toUpperCase() + status.slice(1)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="workstatus" className="block text-sm font-medium">Work Status</Label>
-                  <select
-                    id="workstatus"
-                    name="workstatus"
-                    value={formData.workstatus}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10 p-2 border rounded-md"
-                  >
 
-                    {workStatusOptions.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="education" className="block text-sm font-medium">Education</Label>
-                  <Input
-                    id="education"
-                    name="education"
-                    value={formData.education}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="workexperience" className="block text-sm font-medium">Work Experience</Label>
-                  <Input
-                    id="workexperience"
-                    name="workexperience"
-                    value={formData.workexperience}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="agreement" className="block text-sm font-medium">Agreement</Label>
-                  <select
-                    id="agreement"
-                    name="agreement"
-                    value={formData.agreement}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10 p-2 border rounded-md"
-                  >
-                    <option value="Y">Yes</option>
-                    <option value="N">No</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="ssn" className="block text-sm font-medium">SSN</Label>
-                  <Input
-                    id="ssn"
-                    name="ssn"
-                    type="password"
-                    value={formData.ssn}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="secondaryemail" className="block text-sm font-medium">Secondary Email</Label>
-                  <Input
-                    id="secondaryemail"
-                    name="secondaryemail"
-                    type="email"
-                    value={formData.secondaryemail}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="secondaryphone" className="block text-sm font-medium">Secondary Phone</Label>
-                  <Input
-                    id="secondaryphone"
-                    name="secondaryphone"
-                    type="tel"
-                    value={formData.secondaryphone}
-                    onChange={handleNewCandidateFormChange}
-                    placeholder="+1 (123) 456-7890"
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="linkedin_id" className="block text-sm font-medium">LinkedIn ID</Label>
-                  <Input
-                    id="linkedin_id"
-                    name="linkedin_id"
-                    value={formData.linkedin_id}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="dob" className="block text-sm font-medium">Date of Birth *</Label>
-                  <Input
-                    id="dob"
-                    name="dob"
-                    type="date"
-                    value={formData.dob}
-                    onChange={handleNewCandidateFormChange}
-                    required
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="emergcontactname" className="block text-sm font-medium">Emergency Contact Name</Label>
-                  <Input
-                    id="emergcontactname"
-                    name="emergcontactname"
-                    value={formData.emergcontactname}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="emergcontactemail" className="block text-sm font-medium">Emergency Contact Email</Label>
-                  <Input
-                    id="emergcontactemail"
-                    name="emergcontactemail"
-                    type="email"
-                    value={formData.emergcontactemail}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="emergcontactphone" className="block text-sm font-medium">Emergency Contact Phone</Label>
-                  <Input
-                    id="emergcontactphone"
-                    name="emergcontactphone"
-                    type="tel"
-                    value={formData.emergcontactphone}
-                    onChange={handleNewCandidateFormChange}
-                    placeholder="+1 (123) 456-7890"
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="md:col-span-2 space-y-1">
-                  <Label htmlFor="emergcontactaddrs" className="block text-sm font-medium">Emergency Contact Address</Label>
-                  <Input
-                    id="emergcontactaddrs"
-                    name="emergcontactaddrs"
-                    value={formData.emergcontactaddrs}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="fee_paid" className="block text-sm font-medium">Fee Paid ($)</Label>
-                  <Input
-                    id="fee_paid"
-                    name="fee_paid"
-                    type="number"
-                    value={formData.fee_paid}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="batchid" className="block text-sm font-medium">Batch *</Label>
-                  <select
-                    id="batchid"
-                    name="batchid"
-                    value={formData.batchid}
-                    onChange={handleNewCandidateFormChange}
-                    required
-                    className="w-full h-10 p-2 border rounded-md"
-                    disabled={batchesLoading}
-                  >
+      {/* Add New Candidate Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-30 p-2 sm:p-4">
+          <div className="w-full max-w-6xl rounded-xl bg-white shadow-2xl sm:rounded-2xl max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 flex items-center justify-between border-b border-blue-200 bg-gradient-to-r from-blue-50 via-purple-50 to-pink-50 px-3 py-2 sm:px-4 sm:py-2 md:px-6">
+              <h2 className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-sm font-semibold text-transparent sm:text-base md:text-lg">
+                Add New Candidate
+              </h2>
+              <button
+                onClick={handleCloseModal}
+                className="rounded-lg p-1 text-blue-400 transition hover:bg-blue-100 hover:text-blue-600"
+              >
+                <X size={16} className="sm:h-5 sm:w-5" />
+              </button>
+            </div>
+
+            <div className="bg-white p-3 sm:p-4 md:p-6">
+              <form onSubmit={handleSubmit(onSubmit)}>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
+                  {/* Full Name */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                      Full Name <span className="text-red-700">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      {...register("full_name", {
+                        required: "Full name is required",
+                        maxLength: { value: 100, message: "Full name cannot exceed 100 characters" },
+                      })}
+                      placeholder="Enter full name"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                    {errors.full_name && (
+                      <p className="mt-1 text-xs text-red-600">{errors.full_name.message}</p>
+                    )}
+                  </div>
+
+                  {/* Email */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                      Email <span className="text-red-700">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      {...register("email", {
+                        required: "Email is required",
+                        pattern: { value: /^\S+@\S+\.\S+$/, message: "Invalid email address" },
+                      })}
+                      placeholder="Enter email"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                    {errors.email && (
+                      <p className="mt-1 text-xs text-red-600">{errors.email.message}</p>
+                    )}
+                  </div>
+
+                  {/* Phone */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                      Phone <span className="text-red-700">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      {...register("phone", {
+                        required: "Phone is required",
+                        validate: (value) => {
+                          const cleaned = cleanPhoneNumber(value);
+                          return cleaned.length >= 10 || "Phone number must be at least 10 digits";
+                        },
+                      })}
+                      onInput={handlePhoneInput}
+                      placeholder="(555) 123-4567"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                    {errors.phone && (
+                      <p className="mt-1 text-xs text-red-600">{errors.phone.message}</p>
+                    )}
+                  </div>
+
+                  {/* Date of Birth */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                      Date of Birth <span className="text-red-700">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      {...register("dob", { required: "Date of birth is required" })}
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                    {errors.dob && (
+                      <p className="mt-1 text-xs text-red-600">{errors.dob.message}</p>
+                    )}
+                  </div>
+
+                  {/* Batch */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                      Batch <span className="text-red-700">*</span>
+                    </label>
                     {batchesLoading ? (
-                      <option value="0">Loading batches...</option>
+                      <p className="text-xs text-gray-500">Loading batches...</p>
                     ) : (
-                      <>
-
+                      <select
+                        {...register("batchid", {
+                          required: "Batch is required",
+                          validate: (value) => value !== 0 || "Please select a batch",
+                        })}
+                        className="w-full rounded-lg border border-blue-200 bg-white px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                      >
+                        <option value="0">Select a batch</option>
                         {mlBatches.map((batch) => (
                           <option key={batch.batchid} value={batch.batchid}>
                             {batch.batchname}
                           </option>
                         ))}
-                      </>
+                      </select>
                     )}
-                  </select>
-                </div>
-                <div className="md:col-span-2 space-y-1">
-                  <Label htmlFor="notes" className="block text-sm font-medium">Notes</Label>
-                  <textarea
-                    id="notes"
-                    name="notes"
-                    value={formData.notes}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full p-2 border rounded-md min-h-[100px]"
-                  />
-                </div>
-                <div className="md:col-span-2 space-y-1">
-                  <Label htmlFor="candidate_folder" className="block text-sm font-medium">Candidate Folder</Label>
-                  <Input
-                    id="candidate_folder"
-                    name="candidate_folder"
-                    value={formData.candidate_folder}
-                    onChange={handleNewCandidateFormChange}
-                    placeholder="Google Drive/Dropbox link"
-                    className="w-full h-10"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="enrolled_date" className="block text-sm font-medium">Enrolled Date</Label>
-                  <Input
-                    id="enrolled_date"
-                    name="enrolled_date"
-                    type="date"
-                    value={formData.enrolled_date}
-                    onChange={handleNewCandidateFormChange}
-                    className="w-full h-10"
-                  />
-                </div>
-              </div>
+                    {errors.batchid && (
+                      <p className="mt-1 text-xs text-red-600">{errors.batchid.message}</p>
+                    )}
+                  </div>
 
-              <div className="mt-6">
-                <button
-                  type="submit"
-                  disabled={formSaveLoading}
-                  className={`w-full rounded-md py-2.5 text-sm font-medium transition duration-200 ${formSaveLoading
-                    ? "cursor-not-allowed bg-gray-400"
-                    : "bg-green-600 text-white hover:bg-green-700"
-                    }`}
-                >
-                  {formSaveLoading ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </form>
-            <button
-              onClick={handleCloseNewCandidateForm}
-              className="absolute right-3 top-3 text-2xl leading-none text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-              aria-label="Close"
-            >
-              &times;
-            </button>
+                  {/* Status */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Status</label>
+                    <select
+                      {...register("status")}
+                      className="w-full rounded-lg border border-blue-200 bg-white px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    >
+                      {statusOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option.charAt(0).toUpperCase() + option.slice(1)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Work Status */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Work Status</label>
+                    <select
+                      {...register("workstatus")}
+                      className="w-full rounded-lg border border-blue-200 bg-white px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    >
+                      {workStatusOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Education */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Education</label>
+                    <input
+                      type="text"
+                      {...register("education")}
+                      placeholder="Enter education"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Work Experience */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Work Experience</label>
+                    <input
+                      type="text"
+                      {...register("workexperience")}
+                      placeholder="Enter work experience"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* SSN */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">SSN</label>
+                    <input
+                      type="password"
+                      {...register("ssn")}
+                      placeholder="Enter SSN"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Agreement */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Agreement</label>
+                    <select
+                      {...register("agreement")}
+                      className="w-full rounded-lg border border-blue-200 bg-white px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    >
+                      <option value="Y">Yes</option>
+                      <option value="N">No</option>
+                    </select>
+                  </div>
+
+                  {/* Secondary Email */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Secondary Email</label>
+                    <input
+                      type="email"
+                      {...register("secondaryemail")}
+                      placeholder="Enter secondary email"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Secondary Phone */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Secondary Phone</label>
+                    <input
+                      type="tel"
+                      {...register("secondaryphone")}
+                      onInput={handlePhoneInput}
+                      placeholder="(555) 123-4567"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* LinkedIn ID */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">LinkedIn ID</label>
+                    <input
+                      type="text"
+                      {...register("linkedin_id")}
+                      placeholder="Enter LinkedIn ID"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Fee Paid */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Fee Paid ($)</label>
+                    <input
+                      type="number"
+                      {...register("fee_paid", {
+                        valueAsNumber: true,
+                        min: { value: 0, message: "Fee paid cannot be negative" },
+                      })}
+                      placeholder="0"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                    {errors.fee_paid && (
+                      <p className="mt-1 text-xs text-red-600">{errors.fee_paid.message}</p>
+                    )}
+                  </div>
+
+                  {/* Enrolled Date */}
+                  <div className="space-y-1 sm:space-y-1.5">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Enrolled Date</label>
+                    <input
+                      type="date"
+                      {...register("enrolled_date")}
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Emergency Contact Section */}
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-4 lg:col-span-4">
+                    <div className="space-y-1 sm:space-y-1.5">
+                      <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                        Emergency Contact Name
+                      </label>
+                      <input
+                        type="text"
+                        {...register("emergcontactname")}
+                        placeholder="Enter emergency contact name"
+                        className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1 sm:space-y-1.5">
+                      <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                        Emergency Contact Email
+                      </label>
+                      <input
+                        type="email"
+                        {...register("emergcontactemail")}
+                        placeholder="Enter emergency contact email"
+                        className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1 sm:space-y-1.5">
+                      <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                        Emergency Contact Phone
+                      </label>
+                      <input
+                        type="tel"
+                        {...register("emergcontactphone", {
+                          validate: (value) => {
+                            if (!value) return true;
+                            const cleaned = cleanPhoneNumber(value);
+                            return cleaned.length >= 10 || "Phone number must be at least 10 digits";
+                          },
+                        })}
+                        onInput={handlePhoneInput}
+                        placeholder="(555) 123-4567"
+                        className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                      />
+                      {errors.emergcontactphone && (
+                        <p className="mt-1 text-xs text-red-600">{errors.emergcontactphone.message}</p>
+                      )}
+                    </div>
+                    <div className="space-y-1 sm:space-y-1.5">
+                      <label className="block text-xs font-bold text-blue-700 sm:text-sm">Candidate Folder</label>
+                      <input
+                        type="text"
+                        {...register("candidate_folder")}
+                        placeholder="Google Drive/Dropbox link"
+                        className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Address */}
+                  <div className="space-y-1 sm:space-y-1.5 lg:col-span-2">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Address</label>
+                    <input
+                      type="text"
+                      {...register("address")}
+                      placeholder="Enter address"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Emergency Contact Address */}
+                  <div className="space-y-1 sm:space-y-1.5 lg:col-span-2">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">
+                      Emergency Contact Address
+                    </label>
+                    <input
+                      type="text"
+                      {...register("emergcontactaddrs")}
+                      placeholder="Enter emergency contact address"
+                      className="w-full rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+
+                  {/* Notes */}
+                  <div className="space-y-1 sm:space-y-1.5 lg:col-span-4">
+                    <label className="block text-xs font-bold text-blue-700 sm:text-sm">Notes</label>
+                    <textarea
+                      {...register("notes")}
+                      placeholder="Enter notes..."
+                      className="min-h-[60px] w-full resize-y rounded-lg border border-blue-200 px-2 py-1.5 text-xs shadow-sm transition hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-400 sm:px-3 sm:py-2 sm:text-sm"
+                    />
+                  </div>
+                </div>
+
+                {/* Form Actions */}
+                <div className="mt-3 flex justify-end gap-2 border-t border-blue-200 pt-2 sm:mt-4 sm:gap-3 sm:pt-3 md:mt-6 md:pt-4">
+                  <button
+                    type="button"
+                    onClick={handleCloseModal}
+                    className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-50 sm:px-4 sm:py-2 sm:text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 px-3 py-1.5 text-xs font-medium text-white shadow-md transition hover:from-cyan-600 hover:to-blue-600 sm:px-5 sm:py-2 sm:text-sm"
+                  >
+                    Save Candidate
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }

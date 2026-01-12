@@ -1,49 +1,107 @@
-# docker-compose.yml
+# services:
+#   db:
+#     image: mysql:8.0
+#     container_name: local-mysql
+#     restart: always
+#     environment:
+#       MYSQL_ROOT_PASSWORD: root
+#       MYSQL_DATABASE: whitebox
+#     ports:
+#       - "3307:3306"
+#     volumes:
+#       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
 
+# backend:
+#   build: ./wbl-backend
+#   container_name: wbl-backend
+#   environment:
+#     DB_HOST: db
+#     DB_PORT: 3306
+#     DB_NAME: whitebox
+#     DB_USER: root
+#     DB_PASSWORD: root
+
+#     SECRET_KEY: local-backend-secret
+#     ALGORITHM: HS256
+
+#     MAIL_SERVER: smtp.gmail.com
+#     MAIL_PORT: "587"          # ⚠️ MUST be STRING
+#     MAIL_USERNAME: test@example.com
+#     MAIL_PASSWORD: testpassword
+#     MAIL_FROM: test@example.com
+#     MAIL_TLS: "true"
+#     MAIL_SSL: "false"
+
+#     PORT: 8080
+
+#   frontend:
+#     build:
+#       context: ./wbl-frontend
+#       args:
+#         NEXT_PUBLIC_API_URL: http://localhost:8080   # ✅ IMPORTANT
+#     container_name: wbl-frontend
+#     restart: always
+#     environment:
+#       NEXT_PUBLIC_API_URL: http://localhost:8080   # ✅ IMPORTANT
+#       NEXTAUTH_URL: http://localhost:3000
+#       NEXTAUTH_SECRET: local-dev-secret
+#     ports:
+#       - "3000:8080"
+#     depends_on:
+#       - backend
 services:
   db:
     image: mysql:8.0
-    container_name: wbl-db
+    container_name: local-mysql
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: whitebox
     ports:
-      - "3307:3306"  # Changed from 3306 to 3307 to avoid conflict
+      - "3307:3306"
     volumes:
-      - db_data:/var/lib/mysql
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
 
   backend:
     build: ./wbl-backend
     container_name: wbl-backend
     restart: always
-    env_file:
-      - ./wbl-backend/.env
     environment:
       DB_HOST: db
-      DB_PORT: 3306           # Inside the container it's still 3306
+      DB_PORT: "3306"
+      DB_NAME: whitebox
       DB_USER: root
       DB_PASSWORD: root
-      DB_NAME: whitebox
-      BACKEND_PORT: 8000
+
+      SECRET_KEY: local-backend-secret
+      ALGORITHM: HS256
+
+      MAIL_SERVER: smtp.gmail.com
+      MAIL_PORT: "587"
+      MAIL_USERNAME: test@example.com
+      MAIL_PASSWORD: testpassword
+      MAIL_FROM: test@example.com
+      MAIL_TLS: "true"
+      MAIL_SSL: "false"
+
+      PORT: "8080"
+    ports:
+      - "8080:8080"
     depends_on:
       - db
-    ports:
-      - "8000:8000"
 
   frontend:
-    build: ./wbl-frontend
+    build:
+      context: ./wbl-frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://backend:8080
     container_name: wbl-frontend
     restart: always
-    env_file:
-      - ./wbl-frontend/.env
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: http://backend:8080
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: local-dev-secret
     ports:
-      - "3000:3000"
+      - "3000:8080"
     depends_on:
       - backend
-
-volumes:
-  db_data:

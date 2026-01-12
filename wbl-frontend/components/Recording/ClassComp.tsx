@@ -1,12 +1,18 @@
 
+"use client";
 import { useSearchParams } from "next/navigation";
 import React, { useState, useEffect } from "react";
+import { apiFetch } from "@/lib/api";
+import { toast } from "sonner";
 
 interface Video {
   id: number;
   description: string;
   link: string;
   videoid: string;
+  subject: string;
+  classdate: string;
+  filename: string;
 }
 
 interface Batch {
@@ -16,81 +22,117 @@ interface Batch {
 
 const RecordingComp: React.FC = () => {
   const searchParams = useSearchParams();
-  const course = searchParams.get("course") as string;
+  const course = (searchParams.get("course") as string) || "";
 
   const [batches, setBatches] = useState<Batch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
-  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [recordings, setRecordings] = useState<Video[]>([]);
+  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [isLoadingBatches, setIsLoadingBatches] = useState(false);
   const [isLoadingRecordings, setIsLoadingRecordings] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Fetch batches when course changes
   useEffect(() => {
-    if (course) {
-      setSelectedBatch(null);
-      setRecordings([]);
-      setSelectedVideo(null);
-      setError(null);
-      fetchBatches(course);
-    }
+    if (!course) return;
+    setSelectedBatch(null);
+    setRecordings([]);
+    setSelectedVideo(null);
+    setError(null);
+    fetchBatches(course);
   }, [course]);
 
   // Fetch recordings when batch changes
   useEffect(() => {
-    if (selectedBatch) {
-      setSelectedVideo(null);
-      setError(null);
+    if (!selectedBatch) {
       setRecordings([]);
-      fetchRecordings(selectedBatch.batchid);
+      setSelectedVideo(null);
+      return;
     }
+    fetchRecordings(selectedBatch.batchid);
   }, [selectedBatch]);
 
-  // Fetch batches from backend
-  const fetchBatches = async (course: string) => {
+  // Fetch batches
+  const fetchBatches = async (courseParam: string) => {
     try {
       setIsLoadingBatches(true);
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/batches?course=${course}`
-      );
-      if (!response.ok) throw new Error("Failed to fetch batches");
+      setError(null);
 
-      const data = await response.json();
-      const batchList = data.batches || data; // supports both wrapped & raw arrays
-      setBatches(batchList);
+      const res = await apiFetch(`/batches?course=${encodeURIComponent(courseParam)}`);
+      const data = res?.data ?? res;
 
-      if (batchList.length > 0) {
-        setSelectedBatch(batchList[0]);
+      let batchList: Batch[] =
+        Array.isArray(data)
+          ? data
+          : Array.isArray(data.batches)
+          ? data.batches
+          : Array.isArray(data.results)
+          ? data.results
+          : [];
+
+      if (!batchList.length) {
+        throw new Error("No batches found for this course.");
       }
-    } catch (err) {
-      setError("Failed to load batches. Please try again.");
+
+      // Always include Kumar Recordings (batchid 99999)
+      if (!batchList.some((b) => b.batchid === 99999)) {
+        batchList.push({ batchname: "Kumar Recordings", batchid: 99999 });
+      }
+
+      // Move Kumar to the end
+      const kumarBatch = batchList.find((b) => b.batchid === 99999)!;
+      const normalBatches = batchList.filter((b) => b.batchid !== 99999);
+      const finalBatchList = [...normalBatches, kumarBatch];
+
+      setBatches(finalBatchList);
+
+      // Default selection: first normal batch
+      const defaultBatch = normalBatches[0] || kumarBatch;
+      setSelectedBatch(defaultBatch);
+    } catch (err: any) {
+      console.error("Error fetching batches:", err);
+      const msg = err?.body || err?.message || "Failed to load batches.";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setIsLoadingBatches(false);
     }
   };
 
-  // Fetch recordings from backend
+  // Fetch recordings
   const fetchRecordings = async (batchid: number) => {
     try {
       setIsLoadingRecordings(true);
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/recording?course=${course}&batchid=${batchid}`
-      );
-      if (!response.ok) throw new Error("Failed to fetch recordings");
+      setError(null);
 
-      const data = await response.json();
-      const recList = Array.isArray(data)
-        ? data
-        : data.batch_recordings || data.recordings || [];
+      const res = await apiFetch(
+        `/recording?course=${encodeURIComponent(course)}&batchid=${encodeURIComponent(String(batchid))}`
+      );
+      const data = res?.data ?? res;
+
+      const recList: Video[] =
+        Array.isArray(data)
+          ? data
+          : Array.isArray(data.batch_recordings)
+          ? data.batch_recordings
+          : Array.isArray(data.recordings)
+          ? data.recordings
+          : Array.isArray(data.results)
+          ? data.results
+          : [];
+
+      if (!recList.length) {
+        setRecordings([]);
+        setError("No recordings found for this batch.");
+        return;
+      }
 
       setRecordings(recList);
-
-      if (recList.length === 0) {
-        setError("No recordings found for this batch.");
-      }
-    } catch (err) {
-      setError("No recordings found for this batch. Please try again.");
+    } catch (err: any) {
+      console.error("Error fetching recordings:", err);
+      const msg = err?.body || err?.message || "Failed to load recordings.";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setIsLoadingRecordings(false);
     }
@@ -98,51 +140,41 @@ const RecordingComp: React.FC = () => {
 
   const handleBatchChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedId = parseInt(e.target.value);
-    const selected = batches.find((batch) => batch.batchid === selectedId);
-    if (!selected) {
-      setError("Selected batch not found.");
-    } else {
-      setSelectedBatch(selected);
-      setError(null);
-      setSelectedVideo(null);
-    }
+    const batch = batches.find((b) => b.batchid === selectedId) || null;
+    setSelectedBatch(batch);
+    setSelectedVideo(null);
+    setError(batch ? null : "Selected batch not found.");
   };
 
   const handleVideoSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedId = parseInt(e.target.value);
-    const selected = recordings.find((rec) => rec.id === selectedId);
-    if (!selected) {
-      setError("Selected recording not found.");
-    } else {
-      setSelectedVideo(selected);
-      setError(null);
-    }
+    const video = recordings.find((v) => v.id === selectedId) || null;
+    setSelectedVideo(video);
+    setError(video ? null : "Selected recording not found.");
   };
 
   const formatVideoTitle = (filename: string) => {
-    filename = filename.replace(/class_/gi, "");
-    filename = filename.replace(/class/gi, "");
-    filename = filename.replace(/_\d+_/g, "_");
-    filename = filename.replace(/_/g, " ");
-    filename = filename.replace(/\.(mp4|wmv|avi|mov|mpg|mkv)$/i, "");
-    filename = filename.trim();
+    let title = filename
+      .replace(/class_/gi, "")
+      .replace(/class/gi, "")
+      .replace(/_\d+_/g, "_")
+      .replace(/_/g, " ")
+      .replace(/\.(mp4|wmv|avi|mov|mpg|mkv)$/i, "")
+      .trim();
 
-    const dateRegex = /\d{4}-\d{2}-\d{2}/;
-    const dateMatch = filename.match(dateRegex);
-
+    const dateMatch = title.match(/\d{4}-\d{2}-\d{2}/);
     if (dateMatch) {
       const date = dateMatch[0];
-      const restOfTitle = filename.replace(dateRegex, "").trim();
-      return `${date} ${restOfTitle}`;
+      const rest = title.replace(/\d{4}-\d{2}-\d{2}/, "").trim();
+      return `${date} ${rest}`;
     }
-
-    return filename;
+    return title;
   };
 
   const renderVideoPlayer = (video: Video) => {
+    if (!video) return null;
     if (video.link.includes("youtu.be") || video.link.includes("youtube.com")) {
-      const youtubeId = video.videoid;
-      const youtubeEmbedUrl = `https://www.youtube.com/embed/${youtubeId}`;
+      const youtubeEmbedUrl = `https://www.youtube.com/embed/${video.videoid}`;
       return (
         <iframe
           width="100%"
@@ -152,21 +184,27 @@ const RecordingComp: React.FC = () => {
           frameBorder="0"
           allowFullScreen
           className="h-[350px] rounded-xl border-2 border-gray-500"
-        ></iframe>
+        />
       );
-    } else {
-      return <video src={video.link} controls className="mb-2 w-full" />;
     }
+    return (
+      <video
+        src={video.link}
+        controls
+        className="mb-2 w-full rounded-xl border-2 border-gray-500"
+      />
+    );
   };
 
   return (
-    <div className="mx-auto mt-6 max-w-full flex-grow space-y-4 sm:mt-0 sm:max-w-3xl">
-      <div className="flex flex-grow flex-col">
-        <label htmlFor="dropdown1">Batch:</label>
+    <div className="mx-auto mt-6 max-w-full flex-grow space-y-4 sm:max-w-3xl">
+      {/* Batch Dropdown */}
+      <div className="flex flex-col">
+        <label htmlFor="batchSelect">Batch:</label>
         <select
-          id="dropdown1"
+          id="batchSelect"
           className="rounded-md border border-gray-300 px-2 py-1 text-black dark:bg-white"
-          value={selectedBatch ? selectedBatch.batchid : ""}
+          value={selectedBatch?.batchid || ""}
           onChange={handleBatchChange}
           disabled={isLoadingBatches}
         >
@@ -175,11 +213,11 @@ const RecordingComp: React.FC = () => {
           ) : (
             <>
               <option value="" disabled>
-                Please Select a batch...
+                Please select a batch...
               </option>
-              {batches.map((batch) => (
-                <option key={batch.batchid} value={batch.batchid}>
-                  {batch.batchname}
+              {batches.map((b) => (
+                <option key={b.batchid} value={b.batchid}>
+                  {b.batchid === 99999 ? "Kumar Recordings" : b.batchname}
                 </option>
               ))}
             </>
@@ -187,10 +225,11 @@ const RecordingComp: React.FC = () => {
         </select>
       </div>
 
-      <div className="flex flex-grow flex-col justify-between">
-        <label htmlFor="dropdown2">Recordings:</label>
+      {/* Recording Dropdown */}
+      <div className="flex flex-col">
+        <label htmlFor="recordingSelect">Recordings:</label>
         <select
-          id="dropdown2"
+          id="recordingSelect"
           className="mb-5 rounded-md border border-gray-300 px-2 py-1 text-black dark:bg-white"
           onChange={handleVideoSelect}
           disabled={!selectedBatch || isLoadingRecordings}
@@ -200,9 +239,9 @@ const RecordingComp: React.FC = () => {
           ) : (
             <>
               <option value="">Please select a recording...</option>
-              {recordings.map((recording) => (
-                <option key={recording.id} value={recording.id}>
-                  {formatVideoTitle(recording.description)}
+              {recordings.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {formatVideoTitle(r.description || r.filename )}
                 </option>
               ))}
             </>
@@ -210,7 +249,10 @@ const RecordingComp: React.FC = () => {
         </select>
       </div>
 
+      {/* Error Message */}
       {error && <p className="text-red-500">{error}</p>}
+
+      {/* Video Player */}
       {selectedVideo && <div>{renderVideoPlayer(selectedVideo)}</div>}
     </div>
   );
